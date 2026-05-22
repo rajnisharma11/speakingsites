@@ -136,10 +136,15 @@ function ChatPanel({
   isMuted: boolean;
 }) {
   const [draft, setDraft] = useState("");
-  const endRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
+  // Scroll the chat list to the bottom only — never call scrollIntoView,
+  // which scrolls the whole page to bring the element into view and was
+  // causing the page to jump down to the hero chat panel on mount.
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (messages.length === 0) return;
+    const el = listRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [messages.length]);
 
   const disabled = uiState !== "live";
@@ -170,7 +175,7 @@ function ChatPanel({
         </button>
       </div>
 
-      <div className="h-32 sm:h-40 overflow-y-auto px-3 py-2 flex flex-col gap-1.5 text-sm">
+      <div ref={listRef} className="h-32 sm:h-40 overflow-y-auto px-3 py-2 flex flex-col gap-1.5 text-sm">
         {messages.length === 0 && (
           <p className="text-gray-500 text-xs text-center mt-6">
             {disabled
@@ -193,7 +198,6 @@ function ChatPanel({
             {m.text}
           </div>
         ))}
-        <div ref={endRef} />
       </div>
 
       <div className="flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-2 border-t border-white/10">
@@ -520,8 +524,14 @@ export function Hero() {
       await session.start();
       console.log("[Hero] session.start() resolved");
     } catch (err) {
-      console.error("[Hero] start failed", err);
-      const msg = err instanceof Error ? err.message : "Failed to start session.";
+      console.warn("[Hero] start failed", err);
+      const raw = err instanceof Error ? err.message : "Failed to start session.";
+      // The HeyGen API's "Session concurrency limit reached" is an account-
+      // wide cap, not user error — phrase it so visitors don't think the
+      // demo is broken.
+      const msg = /concurrency limit/i.test(raw)
+        ? "The demo is busy right now — please try again in a moment."
+        : raw;
       setErrorMessage(msg);
       setUiState("error");
       sessionRef.current = null;
@@ -608,25 +618,55 @@ export function Hero() {
     };
   }, [cleanupSession]);
 
-  // Swallow uncaught SessionApiError rejections from the HeyGen SDK.
-  // LiveAvatarSession.cleanup() awaits sessionClient.stopSession() but is
-  // itself fire-and-forget from handleRoomDisconnect(), so when the session
-  // was never created on HeyGen (e.g. concurrency limit, mic-blocked start)
-  // the resulting "Session not found" 404 leaks as an unhandled rejection.
-  // Our own startSession() catch already surfaces the real error to the UI.
+  // Swallow uncaught SessionApiError noise from the HeyGen SDK so it doesn't
+  // hit Next.js's dev error overlay. Two leaks exist:
+  //   1) LiveAvatarSession.start() runs `console.error("Session start failed:", err)`
+  //      before re-throwing — our own catch already shows the message in the
+  //      UI, so the console.error is duplicate noise that the dev overlay
+  //      surfaces as a "Console Error".
+  //   2) The same start() then fires `this.cleanup()` without awaiting, which
+  //      calls stopSession() on a session that was never created. HeyGen
+  //      replies 404 "Session not found" → unhandled rejection.
+  // Match by message content (and constructor name as a fallback), and use
+  // capture-phase listeners so we run before the dev overlay's handler.
   useEffect(() => {
-    const handler = (e: PromiseRejectionEvent) => {
-      const r = e.reason as { name?: string; constructor?: { name?: string } } | null;
-      if (
-        r &&
-        typeof r === "object" &&
-        (r.constructor?.name === "SessionApiError" || r.name === "SessionApiError")
-      ) {
+    const isSdkSessionError = (r: unknown): boolean => {
+      if (!r || typeof r !== "object") return false;
+      const obj = r as { name?: string; message?: string; constructor?: { name?: string } };
+      if (obj.constructor?.name === "SessionApiError" || obj.name === "SessionApiError") {
+        return true;
+      }
+      const msg = typeof obj.message === "string" ? obj.message : "";
+      return /Session not found|concurrency limit|API request failed/i.test(msg);
+    };
+
+    const onRejection = (e: PromiseRejectionEvent) => {
+      if (isSdkSessionError(e.reason)) e.preventDefault();
+    };
+    const onError = (e: ErrorEvent) => {
+      if (isSdkSessionError(e.error) || /Session not found|concurrency limit/i.test(e.message ?? "")) {
         e.preventDefault();
       }
     };
-    window.addEventListener("unhandledrejection", handler);
-    return () => window.removeEventListener("unhandledrejection", handler);
+
+    // Filter the SDK's own console.error("Session start failed:", ...) call
+    // — the dev overlay reads console.error to flag "Console Error".
+    const origConsoleError = console.error;
+    const patchedConsoleError = (...args: unknown[]) => {
+      const first = args[0];
+      if (typeof first === "string" && first.startsWith("Session start failed:")) return;
+      if (args.some(isSdkSessionError)) return;
+      origConsoleError.apply(console, args as never);
+    };
+    console.error = patchedConsoleError;
+
+    window.addEventListener("unhandledrejection", onRejection, true);
+    window.addEventListener("error", onError, true);
+    return () => {
+      window.removeEventListener("unhandledrejection", onRejection, true);
+      window.removeEventListener("error", onError, true);
+      if (console.error === patchedConsoleError) console.error = origConsoleError;
+    };
   }, []);
 
   // Fire-and-forget backend flush when the tab is closing. We can't await
