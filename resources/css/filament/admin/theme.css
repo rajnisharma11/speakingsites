@@ -1,0 +1,124 @@
+/* SpeakingSites Admin theme — gradient + glass polish */
+
+/* Login page: hero gradient background */
+.fi-simple-layout {
+    background: radial-gradient(ellipse at top left, rgba(99, 102, 241, 0.18), transparent 55%),
+                radial-gradient(ellipse at bottom right, rgba(168, 85, 247, 0.18), transparent 55%),
+                linear-gradient(135deg, #f8fafc 0%, #eef2ff 50%, #faf5ff 100%);
+    min-height: 100vh;
+}
+
+.dark .fi-simple-layout {
+    background: radial-gradient(ellipse at top left, rgba(99, 102, 241, 0.25), transparent 55%),
+                radial-gradient(ellipse at bottom right, rgba(168, 85, 247, 0.25), transparent 55%),
+                linear-gradient(135deg, #0b1020 0%, #111827 50%, #1a1530 100%);
+}
+
+.fi-simple-main {
+    backdrop-filter: blur(14px);
+    background: rgba(255, 255, 255, 0.85) !important;
+    border: 1px solid rgba(99, 102, 241, 0.12);
+    box-shadow: 0 20px 50px -12px rgba(99, 102, 241, 0.25);
+    border-radius: 1.25rem !important;
+}
+
+.dark .fi-simple-main {
+    background: rgba(17, 24, 39, 0.75) !important;
+    border-color: rgba(168, 85, 247, 0.15);
+    box-shadow: 0 20px 50px -12px rgba(0, 0, 0, 0.5);
+}
+
+/* Sidebar: subtle gradient accent */
+.fi-sidebar {
+    background: linear-gradient(180deg, rgba(99, 102, 241, 0.03), rgba(168, 85, 247, 0.03)) !important;
+}
+
+.dark .fi-sidebar {
+    background: linear-gradient(180deg, rgba(99, 102, 241, 0.06), rgba(168, 85, 247, 0.04)) !important;
+}
+
+/* Sidebar group labels: more visual hierarchy */
+.fi-sidebar-group-label {
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 0.7rem !important;
+    font-weight: 700 !important;
+    color: rgb(99, 102, 241) !important;
+}
+
+.dark .fi-sidebar-group-label {
+    color: rgb(167, 139, 250) !important;
+}
+
+/* Active nav item: gradient pill */
+.fi-sidebar-item-active .fi-sidebar-item-button {
+    background: linear-gradient(90deg, rgba(99, 102, 241, 0.12), rgba(168, 85, 247, 0.08)) !important;
+    border-left: 3px solid rgb(99, 102, 241);
+}
+
+/* Topbar: subtle gradient bottom border */
+.fi-topbar {
+    background: white !important;
+    border-bottom: 1px solid transparent !important;
+    background-image: linear-gradient(white, white),
+                      linear-gradient(90deg, rgba(99, 102, 241, 0.4), rgba(168, 85, 247, 0.4)) !important;
+    background-origin: border-box !important;
+    background-clip: padding-box, border-box !important;
+}
+
+.dark .fi-topbar {
+    background-image: linear-gradient(rgb(17, 24, 39), rgb(17, 24, 39)),
+                      linear-gradient(90deg, rgba(99, 102, 241, 0.5), rgba(168, 85, 247, 0.5)) !important;
+}
+
+/* Stats widgets: glassmorphism + gradient ring */
+.fi-wi-stats-overview-stat {
+    border-radius: 1rem !important;
+    border: 1px solid rgba(99, 102, 241, 0.1) !important;
+    background: linear-gradient(145deg, rgba(255, 255, 255, 0.95), rgba(238, 242, 255, 0.6)) !important;
+    box-shadow: 0 4px 12px -4px rgba(99, 102, 241, 0.15) !important;
+    transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+.fi-wi-stats-overview-stat:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 12px 24px -8px rgba(99, 102, 241, 0.25) !important;
+}
+
+.dark .fi-wi-stats-overview-stat {
+    background: linear-gradient(145deg, rgba(31, 41, 55, 0.8), rgba(17, 24, 39, 0.6)) !important;
+    border-color: rgba(168, 85, 247, 0.15) !important;
+}
+
+/* Page heading gradient */
+.fi-header-heading {
+    background: linear-gradient(90deg, #4f46e5, #9333ea);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+}
+
+/* Primary buttons: stronger gradient */
+.fi-btn-color-primary {
+    background: linear-gradient(90deg, #6366f1, #a855f7) !important;
+    border: 0 !important;
+    box-shadow: 0 4px 12px -2px rgba(99, 102, 241, 0.4) !important;
+}
+
+.fi-btn-color-primary:hover {
+    background: linear-gradient(90deg, #4f46e5, #9333ea) !important;
+    box-shadow: 0 8px 20px -4px rgba(99, 102, 241, 0.55) !important;
+}
+
+/* Tables: rounded + soft borders */
+.fi-ta-ctn {
+    border-radius: 1rem !important;
+    overflow: hidden;
+    border: 1px solid rgba(99, 102, 241, 0.1) !important;
+}
+
+/* Brand logo size in sidebar */
+.fi-logo {
+    height: 2.25rem !important;
+}

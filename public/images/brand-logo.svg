@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 56" width="220" height="56">
+  <defs>
+    <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#c5e649"/>
+      <stop offset="100%" stop-color="#5f701f"/>
+    </linearGradient>
+    <linearGradient id="tg" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#485515"/>
+      <stop offset="100%" stop-color="#8ea632"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="6" width="44" height="44" rx="12" fill="url(#lg)"/>
+  <path d="M12 18c0-2.2 1.8-4 4-4h16c2.2 0 4 1.8 4 4v10c0 2.2-1.8 4-4 4h-9l-6 5v-5h-1c-2.2 0-4-1.8-4-4z" fill="#1a2004"/>
+  <circle cx="20" cy="23" r="1.8" fill="#c5e649"/>
+  <circle cx="24" cy="23" r="1.8" fill="#c5e649"/>
+  <circle cx="28" cy="23" r="1.8" fill="#c5e649"/>
+  <text x="56" y="36" font-family="Inter, system-ui, sans-serif" font-weight="700" font-size="20" fill="url(#tg)">SpeakingSites</text>
+</svg>

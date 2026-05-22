@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npm run *)"
+      "Bash(php artisan *)",
+      "Bash(composer show *)",
+      "Bash(findstr /i filament)",
+      "Bash(Select-String -Pattern \"filament\")",
+      "Bash(composer require *)",
+      "Bash(php -m)"
     ]
   }
 }

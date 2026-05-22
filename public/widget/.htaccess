@@ -1,0 +1,8 @@
+<IfModule mod_headers.c>
+    # The widget JS is loaded into client sites by URL. If browsers cache an
+    # old copy, new fields (e.g. visitor_name/email/phone) silently stop being
+    # sent. Force a revalidation each load — file is small (~15 KB).
+    <FilesMatch "\.js$">
+        Header set Cache-Control "no-cache, must-revalidate"
+    </FilesMatch>
+</IfModule>
