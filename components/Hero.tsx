@@ -27,6 +27,48 @@ type UiState = "idle" | "connecting" | "live" | "ending" | "error";
 
 type ChatMsg = { sender: "user" | "avatar"; text: string; ts: number };
 
+// Pull visitor name / email / phone out of what the user just said. Voice and
+// typed transcripts both flow through here, so the patterns are deliberately
+// loose. We only return fields we found; the caller keeps the first non-empty
+// hit per session so a later message saying "and my friend's name is …"
+// doesn't overwrite the real visitor.
+function extractVisitorInfo(text: string): {
+  name?: string;
+  email?: string;
+  phone?: string;
+} {
+  const out: { name?: string; email?: string; phone?: string } = {};
+
+  const emailMatch = text.match(/\b[\w.+-]+@[\w-]+\.[\w-]+(?:\.[\w-]+)*\b/);
+  if (emailMatch) out.email = emailMatch[0];
+
+  // Phone: tolerate +, spaces, dashes, parens, dots. Strip them before saving.
+  // Require at least 9 digits so we don't grab "I have 3 cats and 2 kids".
+  const phoneRaw = text.match(
+    /(\+?\d[\d\s().-]{7,}\d)/,
+  );
+  if (phoneRaw) {
+    const digits = phoneRaw[1].replace(/[^\d+]/g, "");
+    if (digits.replace(/\D/g, "").length >= 9) out.phone = digits;
+  }
+
+  // Name: only match explicit self-introduction patterns. "I'm" alone is too
+  // ambiguous ("I'm calling about…"), so stick to "my name is / this is /
+  // I'm called / name's".
+  const nameMatch = text.match(
+    /(?:my name is|name's|this is|i'?m called)\s+([a-z][a-z'\-]+(?:\s+[a-z][a-z'\-]+){0,2})/i,
+  );
+  if (nameMatch) {
+    out.name = nameMatch[1]
+      .trim()
+      .split(/\s+/)
+      .map((w) => w[0].toUpperCase() + w.slice(1).toLowerCase())
+      .join(" ");
+  }
+
+  return out;
+}
+
 function AvatarStage({
   videoRef,
   uiState,
@@ -253,10 +295,23 @@ export function Hero() {
   const endedHandledRef = useRef(false);
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Visitor identity scraped from the user's own transcript. First non-empty
+  // hit wins so a later utterance ("my wife's name is …") can't overwrite the
+  // real lead. Flushed to the backend on every transcript update.
+  const visitorNameRef = useRef<string | null>(null);
+  const visitorEmailRef = useRef<string | null>(null);
+  const visitorPhoneRef = useRef<string | null>(null);
+
   // Progressive transcript flush. Backend /end is idempotent — it replaces
   // the conversation's messages on every call — so we can safely re-POST
   // the growing transcript while the call is still live. Without this, a
   // tab close or browser crash mid-conversation would lose everything.
+  const appendVisitorFields = useCallback((fd: FormData) => {
+    if (visitorNameRef.current) fd.append("visitor_name", visitorNameRef.current);
+    if (visitorEmailRef.current) fd.append("visitor_email", visitorEmailRef.current);
+    if (visitorPhoneRef.current) fd.append("visitor_phone", visitorPhoneRef.current);
+  }, []);
+
   const flushTranscript = useCallback(async () => {
     const sessionId = backendSessionIdRef.current;
     if (!sessionId || endedHandledRef.current) return;
@@ -264,12 +319,13 @@ export function Hero() {
     const fd = new FormData();
     fd.append("session_id", sessionId);
     fd.append("transcript", JSON.stringify(transcriptRef.current));
+    appendVisitorFields(fd);
     try {
       await fetch("/api/conversation/end/", { method: "POST", body: fd });
     } catch (e) {
       console.warn("[Hero] transcript flush failed", e);
     }
-  }, []);
+  }, [appendVisitorFields]);
 
   const scheduleFlush = useCallback(() => {
     if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
@@ -321,6 +377,7 @@ export function Hero() {
     const fd = new FormData();
     fd.append("session_id", sessionId);
     fd.append("transcript", JSON.stringify(transcriptRef.current));
+    appendVisitorFields(fd);
     if (audioBlob) {
       const ext = audioBlob.type.indexOf("webm") !== -1 ? "webm" : "ogg";
       fd.append("audio", audioBlob, "conversation." + ext);
@@ -335,7 +392,10 @@ export function Hero() {
     backendSessionIdRef.current = null;
     audioChunksRef.current = [];
     transcriptRef.current = [];
-  }, []);
+    visitorNameRef.current = null;
+    visitorEmailRef.current = null;
+    visitorPhoneRef.current = null;
+  }, [appendVisitorFields]);
 
   const cleanupSession = useCallback(async () => {
     await finaliseBackendSession();
@@ -370,6 +430,9 @@ export function Hero() {
     audioChunksRef.current = [];
     endedHandledRef.current = false;
     backendSessionIdRef.current = null;
+    visitorNameRef.current = null;
+    visitorEmailRef.current = null;
+    visitorPhoneRef.current = null;
 
     try {
       const tokenRes = await fetch("/api/avatar/token", {
@@ -453,6 +516,10 @@ export function Hero() {
             content: e.text,
             timestamp: new Date().toISOString(),
           });
+          const found = extractVisitorInfo(e.text);
+          if (found.name && !visitorNameRef.current) visitorNameRef.current = found.name;
+          if (found.email && !visitorEmailRef.current) visitorEmailRef.current = found.email;
+          if (found.phone && !visitorPhoneRef.current) visitorPhoneRef.current = found.phone;
           scheduleFlush();
         },
       );
@@ -680,6 +747,9 @@ export function Hero() {
       const fd = new FormData();
       fd.append("session_id", sessionId);
       fd.append("transcript", JSON.stringify(transcriptRef.current));
+      if (visitorNameRef.current) fd.append("visitor_name", visitorNameRef.current);
+      if (visitorEmailRef.current) fd.append("visitor_email", visitorEmailRef.current);
+      if (visitorPhoneRef.current) fd.append("visitor_phone", visitorPhoneRef.current);
       try {
         navigator.sendBeacon("/api/conversation/end/", fd);
       } catch {

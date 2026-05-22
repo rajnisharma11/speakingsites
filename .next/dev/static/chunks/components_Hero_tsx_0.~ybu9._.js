@@ -49,6 +49,31 @@ const INDUSTRIES = [
         icon: "/images/Plasterericon.png"
     }
 ];
+// Pull visitor name / email / phone out of what the user just said. Voice and
+// typed transcripts both flow through here, so the patterns are deliberately
+// loose. We only return fields we found; the caller keeps the first non-empty
+// hit per session so a later message saying "and my friend's name is …"
+// doesn't overwrite the real visitor.
+function extractVisitorInfo(text) {
+    const out = {};
+    const emailMatch = text.match(/\b[\w.+-]+@[\w-]+\.[\w-]+(?:\.[\w-]+)*\b/);
+    if (emailMatch) out.email = emailMatch[0];
+    // Phone: tolerate +, spaces, dashes, parens, dots. Strip them before saving.
+    // Require at least 9 digits so we don't grab "I have 3 cats and 2 kids".
+    const phoneRaw = text.match(/(\+?\d[\d\s().-]{7,}\d)/);
+    if (phoneRaw) {
+        const digits = phoneRaw[1].replace(/[^\d+]/g, "");
+        if (digits.replace(/\D/g, "").length >= 9) out.phone = digits;
+    }
+    // Name: only match explicit self-introduction patterns. "I'm" alone is too
+    // ambiguous ("I'm calling about…"), so stick to "my name is / this is /
+    // I'm called / name's".
+    const nameMatch = text.match(/(?:my name is|name's|this is|i'?m called)\s+([a-z][a-z'\-]+(?:\s+[a-z][a-z'\-]+){0,2})/i);
+    if (nameMatch) {
+        out.name = nameMatch[1].trim().split(/\s+/).map((w)=>w[0].toUpperCase() + w.slice(1).toLowerCase()).join(" ");
+    }
+    return out;
+}
 function AvatarStage({ videoRef, uiState, isStreamReady, errorMessage, onStart, audioOn, onEnableAudio, onToggleAudio }) {
     return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
         className: "hero-avatar relative overflow-hidden h-[400px] w-full max-w-[380px] mx-auto group rounded-[10px] bg-black",
@@ -61,7 +86,7 @@ function AvatarStage({ videoRef, uiState, isStreamReady, errorMessage, onStart, 
                 className: `absolute inset-0 z-10 w-full h-full object-cover transition-opacity duration-300 ${isStreamReady ? "opacity-100" : "opacity-0"}`
             }, void 0, false, {
                 fileName: "[project]/components/Hero.tsx",
-                lineNumber: 51,
+                lineNumber: 93,
                 columnNumber: 7
             }, this),
             uiState === "live" && isStreamReady && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
@@ -73,18 +98,18 @@ function AvatarStage({ videoRef, uiState, isStreamReady, errorMessage, onStart, 
                     className: "w-4 h-4"
                 }, void 0, false, {
                     fileName: "[project]/components/Hero.tsx",
-                    lineNumber: 69,
+                    lineNumber: 111,
                     columnNumber: 22
                 }, this) : /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$volume$2d$x$2e$mjs__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__VolumeX$3e$__["VolumeX"], {
                     className: "w-4 h-4"
                 }, void 0, false, {
                     fileName: "[project]/components/Hero.tsx",
-                    lineNumber: 69,
+                    lineNumber: 111,
                     columnNumber: 56
                 }, this)
             }, void 0, false, {
                 fileName: "[project]/components/Hero.tsx",
-                lineNumber: 63,
+                lineNumber: 105,
                 columnNumber: 9
             }, this),
             uiState === "live" && isStreamReady && !audioOn && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
@@ -96,14 +121,14 @@ function AvatarStage({ videoRef, uiState, isStreamReady, errorMessage, onStart, 
                         className: "w-4 h-4"
                     }, void 0, false, {
                         fileName: "[project]/components/Hero.tsx",
-                        lineNumber: 81,
+                        lineNumber: 123,
                         columnNumber: 11
                     }, this),
                     "Click to enable sound"
                 ]
             }, void 0, true, {
                 fileName: "[project]/components/Hero.tsx",
-                lineNumber: 76,
+                lineNumber: 118,
                 columnNumber: 9
             }, this),
             uiState === "idle" && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -114,7 +139,7 @@ function AvatarStage({ videoRef, uiState, isStreamReady, errorMessage, onStart, 
                         strokeWidth: 1.5
                     }, void 0, false, {
                         fileName: "[project]/components/Hero.tsx",
-                        lineNumber: 88,
+                        lineNumber: 130,
                         columnNumber: 11
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("p", {
@@ -122,7 +147,7 @@ function AvatarStage({ videoRef, uiState, isStreamReady, errorMessage, onStart, 
                         children: "Voice-powered demo avatar"
                     }, void 0, false, {
                         fileName: "[project]/components/Hero.tsx",
-                        lineNumber: 89,
+                        lineNumber: 131,
                         columnNumber: 11
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
@@ -135,20 +160,20 @@ function AvatarStage({ videoRef, uiState, isStreamReady, errorMessage, onStart, 
                                 strokeWidth: 2
                             }, void 0, false, {
                                 fileName: "[project]/components/Hero.tsx",
-                                lineNumber: 95,
+                                lineNumber: 137,
                                 columnNumber: 13
                             }, this),
                             "Chat now"
                         ]
                     }, void 0, true, {
                         fileName: "[project]/components/Hero.tsx",
-                        lineNumber: 90,
+                        lineNumber: 132,
                         columnNumber: 11
                     }, this)
                 ]
             }, void 0, true, {
                 fileName: "[project]/components/Hero.tsx",
-                lineNumber: 87,
+                lineNumber: 129,
                 columnNumber: 9
             }, this),
             (uiState === "connecting" || uiState === "live" && !isStreamReady) && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -159,7 +184,7 @@ function AvatarStage({ videoRef, uiState, isStreamReady, errorMessage, onStart, 
                         strokeWidth: 1.5
                     }, void 0, false, {
                         fileName: "[project]/components/Hero.tsx",
-                        lineNumber: 103,
+                        lineNumber: 145,
                         columnNumber: 11
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("p", {
@@ -167,13 +192,13 @@ function AvatarStage({ videoRef, uiState, isStreamReady, errorMessage, onStart, 
                         children: "Connecting…"
                     }, void 0, false, {
                         fileName: "[project]/components/Hero.tsx",
-                        lineNumber: 104,
+                        lineNumber: 146,
                         columnNumber: 11
                     }, this)
                 ]
             }, void 0, true, {
                 fileName: "[project]/components/Hero.tsx",
-                lineNumber: 102,
+                lineNumber: 144,
                 columnNumber: 9
             }, this),
             uiState === "ending" && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -184,7 +209,7 @@ function AvatarStage({ videoRef, uiState, isStreamReady, errorMessage, onStart, 
                         strokeWidth: 1.5
                     }, void 0, false, {
                         fileName: "[project]/components/Hero.tsx",
-                        lineNumber: 110,
+                        lineNumber: 152,
                         columnNumber: 11
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("p", {
@@ -192,13 +217,13 @@ function AvatarStage({ videoRef, uiState, isStreamReady, errorMessage, onStart, 
                         children: "Ending…"
                     }, void 0, false, {
                         fileName: "[project]/components/Hero.tsx",
-                        lineNumber: 111,
+                        lineNumber: 153,
                         columnNumber: 11
                     }, this)
                 ]
             }, void 0, true, {
                 fileName: "[project]/components/Hero.tsx",
-                lineNumber: 109,
+                lineNumber: 151,
                 columnNumber: 9
             }, this),
             uiState === "error" && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -209,7 +234,7 @@ function AvatarStage({ videoRef, uiState, isStreamReady, errorMessage, onStart, 
                         strokeWidth: 1.5
                     }, void 0, false, {
                         fileName: "[project]/components/Hero.tsx",
-                        lineNumber: 117,
+                        lineNumber: 159,
                         columnNumber: 11
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("p", {
@@ -217,19 +242,19 @@ function AvatarStage({ videoRef, uiState, isStreamReady, errorMessage, onStart, 
                         children: errorMessage ?? "Something went wrong."
                     }, void 0, false, {
                         fileName: "[project]/components/Hero.tsx",
-                        lineNumber: 118,
+                        lineNumber: 160,
                         columnNumber: 11
                     }, this)
                 ]
             }, void 0, true, {
                 fileName: "[project]/components/Hero.tsx",
-                lineNumber: 116,
+                lineNumber: 158,
                 columnNumber: 9
             }, this)
         ]
     }, void 0, true, {
         fileName: "[project]/components/Hero.tsx",
-        lineNumber: 50,
+        lineNumber: 92,
         columnNumber: 5
     }, this);
 }
@@ -268,7 +293,7 @@ function ChatPanel({ uiState, messages, onSend, onToggleMute, isMuted }) {
                         children: "Chat"
                     }, void 0, false, {
                         fileName: "[project]/components/Hero.tsx",
-                        lineNumber: 162,
+                        lineNumber: 204,
                         columnNumber: 9
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
@@ -281,26 +306,26 @@ function ChatPanel({ uiState, messages, onSend, onToggleMute, isMuted }) {
                                 className: "w-3.5 h-3.5"
                             }, void 0, false, {
                                 fileName: "[project]/components/Hero.tsx",
-                                lineNumber: 173,
+                                lineNumber: 215,
                                 columnNumber: 22
                             }, this) : /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$mic$2e$mjs__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__Mic$3e$__["Mic"], {
                                 className: "w-3.5 h-3.5"
                             }, void 0, false, {
                                 fileName: "[project]/components/Hero.tsx",
-                                lineNumber: 173,
+                                lineNumber: 215,
                                 columnNumber: 59
                             }, this),
                             isMuted ? "Muted" : "Mic on"
                         ]
                     }, void 0, true, {
                         fileName: "[project]/components/Hero.tsx",
-                        lineNumber: 163,
+                        lineNumber: 205,
                         columnNumber: 9
                     }, this)
                 ]
             }, void 0, true, {
                 fileName: "[project]/components/Hero.tsx",
-                lineNumber: 161,
+                lineNumber: 203,
                 columnNumber: 7
             }, this),
             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -312,7 +337,7 @@ function ChatPanel({ uiState, messages, onSend, onToggleMute, isMuted }) {
                         children: disabled ? "Start a session to chat." : "Speak, or type below."
                     }, void 0, false, {
                         fileName: "[project]/components/Hero.tsx",
-                        lineNumber: 180,
+                        lineNumber: 222,
                         columnNumber: 11
                     }, this),
                     messages.map((m, i)=>/*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -323,20 +348,20 @@ function ChatPanel({ uiState, messages, onSend, onToggleMute, isMuted }) {
                                     children: m.sender === "user" ? "You" : "Avatar"
                                 }, void 0, false, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 195,
+                                    lineNumber: 237,
                                     columnNumber: 13
                                 }, this),
                                 m.text
                             ]
                         }, i, true, {
                             fileName: "[project]/components/Hero.tsx",
-                            lineNumber: 187,
+                            lineNumber: 229,
                             columnNumber: 11
                         }, this))
                 ]
             }, void 0, true, {
                 fileName: "[project]/components/Hero.tsx",
-                lineNumber: 178,
+                lineNumber: 220,
                 columnNumber: 7
             }, this),
             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -354,7 +379,7 @@ function ChatPanel({ uiState, messages, onSend, onToggleMute, isMuted }) {
                         className: "flex-1 min-w-0 bg-white/5 border border-white/10 rounded-md px-2 sm:px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-neon/40 disabled:opacity-50"
                     }, void 0, false, {
                         fileName: "[project]/components/Hero.tsx",
-                        lineNumber: 204,
+                        lineNumber: 246,
                         columnNumber: 9
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
@@ -368,7 +393,7 @@ function ChatPanel({ uiState, messages, onSend, onToggleMute, isMuted }) {
                                 className: "w-3.5 h-3.5"
                             }, void 0, false, {
                                 fileName: "[project]/components/Hero.tsx",
-                                lineNumber: 222,
+                                lineNumber: 264,
                                 columnNumber: 11
                             }, this),
                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -376,25 +401,25 @@ function ChatPanel({ uiState, messages, onSend, onToggleMute, isMuted }) {
                                 children: "Send"
                             }, void 0, false, {
                                 fileName: "[project]/components/Hero.tsx",
-                                lineNumber: 223,
+                                lineNumber: 265,
                                 columnNumber: 11
                             }, this)
                         ]
                     }, void 0, true, {
                         fileName: "[project]/components/Hero.tsx",
-                        lineNumber: 215,
+                        lineNumber: 257,
                         columnNumber: 9
                     }, this)
                 ]
             }, void 0, true, {
                 fileName: "[project]/components/Hero.tsx",
-                lineNumber: 203,
+                lineNumber: 245,
                 columnNumber: 7
             }, this)
         ]
     }, void 0, true, {
         fileName: "[project]/components/Hero.tsx",
-        lineNumber: 160,
+        lineNumber: 202,
         columnNumber: 5
     }, this);
 }
@@ -422,10 +447,23 @@ function Hero() {
     const transcriptRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])([]);
     const endedHandledRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(false);
     const flushTimerRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(null);
+    // Visitor identity scraped from the user's own transcript. First non-empty
+    // hit wins so a later utterance ("my wife's name is …") can't overwrite the
+    // real lead. Flushed to the backend on every transcript update.
+    const visitorNameRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(null);
+    const visitorEmailRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(null);
+    const visitorPhoneRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(null);
     // Progressive transcript flush. Backend /end is idempotent — it replaces
     // the conversation's messages on every call — so we can safely re-POST
     // the growing transcript while the call is still live. Without this, a
     // tab close or browser crash mid-conversation would lose everything.
+    const appendVisitorFields = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useCallback"])({
+        "Hero.useCallback[appendVisitorFields]": (fd)=>{
+            if (visitorNameRef.current) fd.append("visitor_name", visitorNameRef.current);
+            if (visitorEmailRef.current) fd.append("visitor_email", visitorEmailRef.current);
+            if (visitorPhoneRef.current) fd.append("visitor_phone", visitorPhoneRef.current);
+        }
+    }["Hero.useCallback[appendVisitorFields]"], []);
     const flushTranscript = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useCallback"])({
         "Hero.useCallback[flushTranscript]": async ()=>{
             const sessionId = backendSessionIdRef.current;
@@ -434,6 +472,7 @@ function Hero() {
             const fd = new FormData();
             fd.append("session_id", sessionId);
             fd.append("transcript", JSON.stringify(transcriptRef.current));
+            appendVisitorFields(fd);
             try {
                 await fetch("/api/conversation/end/", {
                     method: "POST",
@@ -443,7 +482,9 @@ function Hero() {
                 console.warn("[Hero] transcript flush failed", e);
             }
         }
-    }["Hero.useCallback[flushTranscript]"], []);
+    }["Hero.useCallback[flushTranscript]"], [
+        appendVisitorFields
+    ]);
     const scheduleFlush = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useCallback"])({
         "Hero.useCallback[scheduleFlush]": ()=>{
             if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
@@ -504,6 +545,7 @@ function Hero() {
             const fd = new FormData();
             fd.append("session_id", sessionId);
             fd.append("transcript", JSON.stringify(transcriptRef.current));
+            appendVisitorFields(fd);
             if (audioBlob) {
                 const ext = audioBlob.type.indexOf("webm") !== -1 ? "webm" : "ogg";
                 fd.append("audio", audioBlob, "conversation." + ext);
@@ -519,8 +561,13 @@ function Hero() {
             backendSessionIdRef.current = null;
             audioChunksRef.current = [];
             transcriptRef.current = [];
+            visitorNameRef.current = null;
+            visitorEmailRef.current = null;
+            visitorPhoneRef.current = null;
         }
-    }["Hero.useCallback[finaliseBackendSession]"], []);
+    }["Hero.useCallback[finaliseBackendSession]"], [
+        appendVisitorFields
+    ]);
     const cleanupSession = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useCallback"])({
         "Hero.useCallback[cleanupSession]": async ()=>{
             await finaliseBackendSession();
@@ -563,6 +610,9 @@ function Hero() {
             audioChunksRef.current = [];
             endedHandledRef.current = false;
             backendSessionIdRef.current = null;
+            visitorNameRef.current = null;
+            visitorEmailRef.current = null;
+            visitorPhoneRef.current = null;
             try {
                 const tokenRes = await fetch("/api/avatar/token", {
                     method: "POST",
@@ -649,6 +699,10 @@ function Hero() {
                             content: e.text,
                             timestamp: new Date().toISOString()
                         });
+                        const found = extractVisitorInfo(e.text);
+                        if (found.name && !visitorNameRef.current) visitorNameRef.current = found.name;
+                        if (found.email && !visitorEmailRef.current) visitorEmailRef.current = found.email;
+                        if (found.phone && !visitorPhoneRef.current) visitorPhoneRef.current = found.phone;
                         scheduleFlush();
                     }
                 }["Hero.useCallback[startSession]"]);
@@ -912,6 +966,9 @@ function Hero() {
                     const fd = new FormData();
                     fd.append("session_id", sessionId);
                     fd.append("transcript", JSON.stringify(transcriptRef.current));
+                    if (visitorNameRef.current) fd.append("visitor_name", visitorNameRef.current);
+                    if (visitorEmailRef.current) fd.append("visitor_email", visitorEmailRef.current);
+                    if (visitorPhoneRef.current) fd.append("visitor_phone", visitorPhoneRef.current);
                     try {
                         navigator.sendBeacon("/api/conversation/end/", fd);
                     } catch  {
@@ -1003,14 +1060,14 @@ function Hero() {
                                     className: "w-1.5 h-1.5 rounded-full bg-neon"
                                 }, void 0, false, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 773,
+                                    lineNumber: 843,
                                     columnNumber: 13
                                 }, this),
                                 "Now available for all industries"
                             ]
                         }, void 0, true, {
                             fileName: "[project]/components/Hero.tsx",
-                            lineNumber: 772,
+                            lineNumber: 842,
                             columnNumber: 11
                         }, this),
                         /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("h1", {
@@ -1021,20 +1078,20 @@ function Hero() {
                                     children: "Voice-Powered"
                                 }, void 0, false, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 778,
+                                    lineNumber: 848,
                                     columnNumber: 13
                                 }, this),
                                 " ",
                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("br", {}, void 0, false, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 778,
+                                    lineNumber: 848,
                                     columnNumber: 62
                                 }, this),
                                 " Websites!"
                             ]
                         }, void 0, true, {
                             fileName: "[project]/components/Hero.tsx",
-                            lineNumber: 777,
+                            lineNumber: 847,
                             columnNumber: 11
                         }, this),
                         /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -1044,7 +1101,7 @@ function Hero() {
                                     className: "absolute w-[300px] h-[300px] bg-neon/10 rounded-full blur-[80px] -z-10 animate-pulse left-1/2 -translate-x-1/2 top-10"
                                 }, void 0, false, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 782,
+                                    lineNumber: 852,
                                     columnNumber: 13
                                 }, this),
                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(AvatarStage, {
@@ -1058,7 +1115,7 @@ function Hero() {
                                     onToggleAudio: toggleAudio
                                 }, void 0, false, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 783,
+                                    lineNumber: 853,
                                     columnNumber: 13
                                 }, this),
                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(ChatPanel, {
@@ -1069,13 +1126,13 @@ function Hero() {
                                     isMuted: isMuted
                                 }, void 0, false, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 793,
+                                    lineNumber: 863,
                                     columnNumber: 13
                                 }, this)
                             ]
                         }, void 0, true, {
                             fileName: "[project]/components/Hero.tsx",
-                            lineNumber: 781,
+                            lineNumber: 851,
                             columnNumber: 11
                         }, this),
                         /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -1086,7 +1143,7 @@ function Hero() {
                                     children: "Stop losing customers to missed calls. I answer enquiries, book appointments & capture leads — 24/7. You're looking at one right now."
                                 }, void 0, false, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 803,
+                                    lineNumber: 873,
                                     columnNumber: 13
                                 }, this),
                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("p", {
@@ -1097,14 +1154,14 @@ function Hero() {
                                             strokeWidth: 1.5
                                         }, void 0, false, {
                                             fileName: "[project]/components/Hero.tsx",
-                                            lineNumber: 808,
+                                            lineNumber: 878,
                                             columnNumber: 15
                                         }, this),
                                         uiState === "live" ? "Live — speak now." : "I'm listening! Speak to test the demo."
                                     ]
                                 }, void 0, true, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 807,
+                                    lineNumber: 877,
                                     columnNumber: 13
                                 }, this),
                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
@@ -1116,7 +1173,7 @@ function Hero() {
                                             className: "absolute inset-x-0 top-0 h-1/2 glass-shine opacity-60 pointer-events-none"
                                         }, void 0, false, {
                                             fileName: "[project]/components/Hero.tsx",
-                                            lineNumber: 817,
+                                            lineNumber: 887,
                                             columnNumber: 15
                                         }, this),
                                         /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -1127,28 +1184,28 @@ function Hero() {
                                                     strokeWidth: 1.5
                                                 }, void 0, false, {
                                                     fileName: "[project]/components/Hero.tsx",
-                                                    lineNumber: 820,
+                                                    lineNumber: 890,
                                                     columnNumber: 19
                                                 }, this) : uiState === "live" ? /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$mic$2d$off$2e$mjs__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__MicOff$3e$__["MicOff"], {
                                                     className: "w-5 h-5",
                                                     strokeWidth: 1.5
                                                 }, void 0, false, {
                                                     fileName: "[project]/components/Hero.tsx",
-                                                    lineNumber: 822,
+                                                    lineNumber: 892,
                                                     columnNumber: 19
                                                 }, this) : /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$mic$2e$mjs__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__Mic$3e$__["Mic"], {
                                                     className: "w-5 h-5 fill-black/10",
                                                     strokeWidth: 1.5
                                                 }, void 0, false, {
                                                     fileName: "[project]/components/Hero.tsx",
-                                                    lineNumber: 824,
+                                                    lineNumber: 894,
                                                     columnNumber: 19
                                                 }, this),
                                                 buttonLabel
                                             ]
                                         }, void 0, true, {
                                             fileName: "[project]/components/Hero.tsx",
-                                            lineNumber: 818,
+                                            lineNumber: 888,
                                             columnNumber: 15
                                         }, this),
                                         /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$arrow$2d$right$2e$mjs__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__ArrowRight$3e$__["ArrowRight"], {
@@ -1156,19 +1213,19 @@ function Hero() {
                                             strokeWidth: 1.5
                                         }, void 0, false, {
                                             fileName: "[project]/components/Hero.tsx",
-                                            lineNumber: 828,
+                                            lineNumber: 898,
                                             columnNumber: 15
                                         }, this)
                                     ]
                                 }, void 0, true, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 812,
+                                    lineNumber: 882,
                                     columnNumber: 13
                                 }, this)
                             ]
                         }, void 0, true, {
                             fileName: "[project]/components/Hero.tsx",
-                            lineNumber: 802,
+                            lineNumber: 872,
                             columnNumber: 11
                         }, this),
                         /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -1179,7 +1236,7 @@ function Hero() {
                                     children: "Pick your industry"
                                 }, void 0, false, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 833,
+                                    lineNumber: 903,
                                     columnNumber: 13
                                 }, this),
                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -1201,12 +1258,12 @@ function Hero() {
                                                         className: `w-full h-full object-cover rounded-full transition-all duration-300 ${isActive ? "" : "filter grayscale opacity-70 group-hover:opacity-100"}`
                                                     }, void 0, false, {
                                                         fileName: "[project]/components/Hero.tsx",
-                                                        lineNumber: 849,
+                                                        lineNumber: 919,
                                                         columnNumber: 23
                                                     }, this)
                                                 }, void 0, false, {
                                                     fileName: "[project]/components/Hero.tsx",
-                                                    lineNumber: 844,
+                                                    lineNumber: 914,
                                                     columnNumber: 21
                                                 }, this),
                                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -1214,31 +1271,31 @@ function Hero() {
                                                     children: ind.label
                                                 }, void 0, false, {
                                                     fileName: "[project]/components/Hero.tsx",
-                                                    lineNumber: 859,
+                                                    lineNumber: 929,
                                                     columnNumber: 21
                                                 }, this)
                                             ]
                                         }, ind.id, true, {
                                             fileName: "[project]/components/Hero.tsx",
-                                            lineNumber: 838,
+                                            lineNumber: 908,
                                             columnNumber: 19
                                         }, this);
                                     })
                                 }, void 0, false, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 834,
+                                    lineNumber: 904,
                                     columnNumber: 13
                                 }, this)
                             ]
                         }, void 0, true, {
                             fileName: "[project]/components/Hero.tsx",
-                            lineNumber: 832,
+                            lineNumber: 902,
                             columnNumber: 11
                         }, this)
                     ]
                 }, void 0, true, {
                     fileName: "[project]/components/Hero.tsx",
-                    lineNumber: 771,
+                    lineNumber: 841,
                     columnNumber: 9
                 }, this),
                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -1248,7 +1305,7 @@ function Hero() {
                             className: "absolute w-[400px] h-[400px] bg-neon/10 rounded-full blur-[100px] -z-10 animate-pulse"
                         }, void 0, false, {
                             fileName: "[project]/components/Hero.tsx",
-                            lineNumber: 870,
+                            lineNumber: 940,
                             columnNumber: 11
                         }, this),
                         /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -1265,7 +1322,7 @@ function Hero() {
                                     onToggleAudio: toggleAudio
                                 }, void 0, false, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 872,
+                                    lineNumber: 942,
                                     columnNumber: 13
                                 }, this),
                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(ChatPanel, {
@@ -1276,34 +1333,34 @@ function Hero() {
                                     isMuted: isMuted
                                 }, void 0, false, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 882,
+                                    lineNumber: 952,
                                     columnNumber: 13
                                 }, this)
                             ]
                         }, void 0, true, {
                             fileName: "[project]/components/Hero.tsx",
-                            lineNumber: 871,
+                            lineNumber: 941,
                             columnNumber: 11
                         }, this)
                     ]
                 }, void 0, true, {
                     fileName: "[project]/components/Hero.tsx",
-                    lineNumber: 869,
+                    lineNumber: 939,
                     columnNumber: 9
                 }, this)
             ]
         }, void 0, true, {
             fileName: "[project]/components/Hero.tsx",
-            lineNumber: 770,
+            lineNumber: 840,
             columnNumber: 7
         }, this)
     }, void 0, false, {
         fileName: "[project]/components/Hero.tsx",
-        lineNumber: 769,
+        lineNumber: 839,
         columnNumber: 5
     }, this);
 }
-_s1(Hero, "be4nwliNn5X1HdUCvE62sr7lxkU=");
+_s1(Hero, "EDuODfF1stf4tU3uOnXxI0WRAFE=");
 _c2 = Hero;
 var _c, _c1, _c2;
 __turbopack_context__.k.register(_c, "AvatarStage");
