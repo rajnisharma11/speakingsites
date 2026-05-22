@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "npx serve@latest out -l $PORT"
+    "start": "next start -p $PORT"
   },
   "dependencies": {
     "@heygen/liveavatar-web-sdk": "^0.0.18",
