@@ -102,13 +102,19 @@ async function POST(request) {
             status: 400
         });
     }
-    const upstream = await fetch("https://api.liveavatar.com/v1/sessions/token", {
-        method: "POST",
-        headers: {
-            "X-API-KEY": apiKey,
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
+    // Optional cap on session length (seconds). LiveAvatar enforces a per-tier
+    // ceiling server-side that we cannot exceed regardless of what we send
+    // here. If LIVEAVATAR_MAX_SESSION_DURATION is set we request that value;
+    // when it's higher than the account's tier cap the upstream returns
+    // "max_session_duration (Xs) exceeds the maximum allowed (Ys)" — we parse
+    // the "Ys" out and retry once with that value so a stale env var doesn't
+    // break the demo. The server-side log warns so the admin notices the
+    // mismatch and updates the env var (or verifies the plan upgrade).
+    const maxSessionDurationRaw = process.env.LIVEAVATAR_MAX_SESSION_DURATION;
+    const requestedMaxDuration = maxSessionDurationRaw && Number.isFinite(Number(maxSessionDurationRaw)) ? Number(maxSessionDurationRaw) : null;
+    // Builds the request body. Pulled out because the cap-exceeded retry
+    // needs to rebuild it with a lower max_session_duration.
+    const buildBody = (capSeconds)=>JSON.stringify({
             mode: "FULL",
             avatar_id: avatarId,
             avatar_persona: {
@@ -117,13 +123,48 @@ async function POST(request) {
                 },
                 language: "en"
             },
-            is_sandbox: isSandbox
-        }),
-        cache: "no-store"
-    });
-    const json = await upstream.json();
+            is_sandbox: isSandbox,
+            ...capSeconds !== null && {
+                max_session_duration: capSeconds
+            }
+        });
+    const callUpstream = async (capSeconds)=>fetch("https://api.liveavatar.com/v1/sessions/token", {
+            method: "POST",
+            headers: {
+                "X-API-KEY": apiKey,
+                "Content-Type": "application/json"
+            },
+            body: buildBody(capSeconds),
+            cache: "no-store"
+        });
+    // Pull the upstream error text out of LiveAvatar's response shape, which
+    // sometimes nests details in data[0].message and sometimes uses message.
+    const extractError = (j)=>{
+        if (Array.isArray(j.data) && j.data[0]?.message) return j.data[0].message;
+        if (typeof j.message === "string") return j.message;
+        return "LiveAvatar token request failed";
+    };
+    let upstream = await callUpstream(requestedMaxDuration);
+    let json = await upstream.json();
+    let effectiveMaxDuration = requestedMaxDuration;
+    // Cap-exceeded autoretry. The upstream message looks like
+    //   "max_session_duration (1800s) exceeds the maximum allowed (60s)"
+    // — grab the second number, log the mismatch, retry once with that
+    // value, then continue as normal. We only retry if we sent a cap in the
+    // first place (no point re-requesting the same thing).
+    if (requestedMaxDuration !== null && (!upstream.ok || json.code !== 1000)) {
+        const errMsg = extractError(json);
+        const capMatch = /maximum allowed\s*\(\s*(\d+)\s*s?\s*\)/i.exec(errMsg);
+        if (capMatch) {
+            const allowed = Number(capMatch[1]);
+            console.warn("[avatar/token] LIVEAVATAR_MAX_SESSION_DURATION=" + requestedMaxDuration + " exceeds the tier cap (" + allowed + "s). Retrying with " + allowed + ". Lower the env var to " + allowed + " or upgrade the LiveAvatar plan to remove this warning.");
+            upstream = await callUpstream(allowed);
+            json = await upstream.json();
+            effectiveMaxDuration = allowed;
+        }
+    }
     if (!upstream.ok || json.code !== 1000) {
-        const detailed = Array.isArray(json.data) && json.data[0]?.message ? json.data[0].message : json.message ?? "LiveAvatar token request failed";
+        const detailed = extractError(json);
         return __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$server$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["NextResponse"].json({
             error: detailed,
             upstream: json
@@ -131,12 +172,16 @@ async function POST(request) {
             status: upstream.ok ? 502 : upstream.status
         });
     }
+    const success = json;
     return __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$server$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["NextResponse"].json({
-        sessionToken: json.data.session_token,
-        sessionId: json.data.session_id,
+        sessionToken: success.data.session_token,
+        sessionId: success.data.session_id,
         avatarId,
         isSandbox,
-        resolvedSource
+        resolvedSource,
+        // Exposed for diagnostics: the actual cap LiveAvatar accepted, which
+        // may be lower than what was requested if the retry path kicked in.
+        maxSessionDuration: effectiveMaxDuration
     });
 }
 }),

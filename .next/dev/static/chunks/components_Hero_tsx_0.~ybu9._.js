@@ -453,6 +453,50 @@ function Hero() {
     const visitorNameRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(null);
     const visitorEmailRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(null);
     const visitorPhoneRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(null);
+    // Auto-reconnect is intentionally removed — sessions end naturally (user
+    // clicks END, or the server terminates the session) and the UI returns
+    // to idle. With the LiveAvatar plan upgraded the per-session cap no
+    // longer fires mid-conversation, so silent restarts aren't needed; if a
+    // session does end for any reason the visitor just clicks Start again.
+    // How many times to retry the token request on "concurrency limit" before
+    // surfacing the friendly error. Handles brief races against a session that
+    // just ended on the server. Total wait = ~3s + ~6s = 9s in the worst case.
+    const CONCURRENCY_RETRY_DELAYS_MS = [
+        3000,
+        6000
+    ];
+    // Tracks the current industry in a ref so disconnect-time logic doesn't
+    // capture a stale value from a listener closure registered earlier.
+    const activeIndustryRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])("plumber");
+    // LiveAvatar's session id from the token response. We hold onto it so the
+    // beforeunload beacon can release the concurrency slot — otherwise a tab
+    // reload leaves the session "running" server-side until the per-tier hard
+    // cap (60s) reaps it, and the next visitor sees "demo is busy".
+    const liveAvatarSessionIdRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(null);
+    // Avatar-speech noise guard. LiveAvatar's CONVERSATIONAL mode runs VAD on
+    // the visitor's mic and interrupts the avatar the moment it hears any
+    // noise (TV, kids, traffic, even the visitor breathing). The SDK exposes
+    // NO VAD sensitivity dial — the only fix is to mute the mic while the
+    // avatar speaks and unmute when it finishes.
+    //   • userWantsMicOnRef tracks the visitor's INTENT (set by the mic
+    //     toggle button). The auto-unmute on AVATAR_SPEAK_ENDED respects it
+    //     so we don't reopen a mic the user explicitly muted.
+    //   • avatarSpeakingMutedRef tells the AVATAR_SPEAK_ENDED handler "yes,
+    //     it was *us* who muted just now" so we don't keep unmuting when the
+    //     mic was already off for some other reason.
+    const userWantsMicOnRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(true);
+    const avatarSpeakingMutedRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(false);
+    // Disconnect diagnostics. SESSION_DISCONNECTED only gives us a coarse
+    // SessionDisconnectReason (SERVER_INITIATED / UNKNOWN / etc.); the real
+    // reason (MAX_DURATION_REACHED, IDLE_TIMEOUT, AGENT_HANG_UP, …) only comes
+    // through SESSION_STOPPED's stop_reason payload. We capture it in a ref
+    // so the SESSION_DISCONNECTED handler can read it when deciding whether
+    // to reconnect. sessionStartedAtRef + sessionLiveAtRef let us log the
+    // exact age of the session when it died, which is the only way to tell
+    // "60s cap fired" from "idle timeout fired at 30s" from "instant crash".
+    const lastStopReasonRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(null);
+    const sessionStartedAtRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(null);
+    const sessionLiveAtRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useRef"])(null);
     // Progressive transcript flush. Backend /end is idempotent — it replaces
     // the conversation's messages on every call — so we can safely re-POST
     // the growing transcript while the call is still live. Without this, a
@@ -564,6 +608,10 @@ function Hero() {
             visitorNameRef.current = null;
             visitorEmailRef.current = null;
             visitorPhoneRef.current = null;
+            // The SDK's stop() already released the LiveAvatar slot for us; clearing
+            // the ref prevents the beforeunload beacon from posting a redundant stop
+            // for an already-dead session.
+            liveAvatarSessionIdRef.current = null;
         }
     }["Hero.useCallback[finaliseBackendSession]"], [
         appendVisitorFields
@@ -613,23 +661,60 @@ function Hero() {
             visitorNameRef.current = null;
             visitorEmailRef.current = null;
             visitorPhoneRef.current = null;
+            // Default to mic-on, matching the auto-unmute in the CONNECTED handler.
+            userWantsMicOnRef.current = true;
+            avatarSpeakingMutedRef.current = false;
             try {
-                const tokenRes = await fetch("/api/avatar/token", {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json"
-                    },
-                    body: JSON.stringify({
-                        industry
-                    })
-                });
-                if (!tokenRes.ok) {
-                    const j = await tokenRes.json().catch({
-                        "Hero.useCallback[startSession]": ()=>({})
-                    }["Hero.useCallback[startSession]"]);
-                    throw new Error(j.error ?? `Token request failed (${tokenRes.status})`);
+                const requestToken = {
+                    "Hero.useCallback[startSession].requestToken": async ()=>{
+                        const res = await fetch("/api/avatar/token", {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json"
+                            },
+                            body: JSON.stringify({
+                                industry
+                            })
+                        });
+                        if (!res.ok) {
+                            const j = await res.json().catch({
+                                "Hero.useCallback[startSession].requestToken": ()=>({})
+                            }["Hero.useCallback[startSession].requestToken"]);
+                            throw new Error(j.error ?? `Token request failed (${res.status})`);
+                        }
+                        return await res.json();
+                    }
+                }["Hero.useCallback[startSession].requestToken"];
+                let payload = null;
+                let lastErr = null;
+                const attempts = [
+                    0,
+                    ...CONCURRENCY_RETRY_DELAYS_MS
+                ];
+                for(let i = 0; i < attempts.length; i++){
+                    if (attempts[i] > 0) {
+                        console.log("[Hero] retrying token request after " + attempts[i] + "ms");
+                        await new Promise({
+                            "Hero.useCallback[startSession]": (r)=>setTimeout(r, attempts[i])
+                        }["Hero.useCallback[startSession]"]);
+                    }
+                    try {
+                        payload = await requestToken();
+                        break;
+                    } catch (e) {
+                        lastErr = e;
+                        const msg = e instanceof Error ? e.message : String(e);
+                        // Only retry on concurrency-limit; everything else (auth, invalid
+                        // avatar id, network) is a hard failure.
+                        if (!/concurrency limit/i.test(msg)) throw e;
+                        console.warn("[Hero] token concurrency-limit (attempt " + (i + 1) + "/" + attempts.length + ")");
+                    }
                 }
-                const payload = await tokenRes.json();
+                if (!payload) throw lastErr ?? new Error("Token request failed");
+                liveAvatarSessionIdRef.current = payload.sessionId;
+                sessionStartedAtRef.current = Date.now();
+                sessionLiveAtRef.current = null;
+                lastStopReasonRef.current = null;
                 console.log("[Hero] token OK", payload);
                 const { LiveAvatarSession, SessionEvent, SessionState, AgentEventsEnum, VoiceChatEvent } = await __turbopack_context__.A("[project]/node_modules/@heygen/liveavatar-web-sdk/lib/index.esm.js [app-client] (ecmascript, async loader)");
                 const session = new LiveAvatarSession(payload.sessionToken, {
@@ -646,29 +731,57 @@ function Hero() {
                     "Hero.useCallback[startSession]": (state)=>{
                         console.log("[Hero] SESSION_STATE_CHANGED →", state);
                         if (state === SessionState.CONNECTED) {
+                            sessionLiveAtRef.current = Date.now();
+                            // Surface the actual tier cap so we can see in the console whether
+                            // we're being throttled to 60s (free tier), 300s, 1800s, etc.
+                            const max = session.maxSessionDuration;
+                            console.log("[Hero] session CONNECTED — maxSessionDuration=" + (max == null ? "null (no cap reported)" : max + "s") + ", sessionId=" + (session.sessionId ?? "n/a"));
                             setUiState("live");
                             // Auto-unmute the mic so voice chat works immediately. The user
                             // can still mute via the toggle in the chat panel. Without this,
                             // visitors press "Chat now" and wonder why the avatar can't hear
-                            // them — they didn't realise voice chat starts muted.
+                            // them — they didn't realise voice chat starts muted. Record the
+                            // intent so the avatar-speech noise guard knows to restore the
+                            // mic after each utterance.
                             try {
+                                userWantsMicOnRef.current = true;
                                 session.voiceChat.unmute();
                             } catch (e) {
                                 console.warn("[Hero] auto-unmute failed", e);
                             }
-                        } else if (state === SessionState.DISCONNECTED) {
-                            sessionRef.current = null;
-                            setIsStreamReady(false);
-                            setUiState("idle");
-                            void finaliseBackendSession();
                         }
+                    // DISCONNECTED is handled by SESSION_DISCONNECTED below, which
+                    // also carries the disconnect reason for the log line. The SDK
+                    // emits state-change first, then SESSION_DISCONNECTED, so doing
+                    // nothing here keeps the teardown ordering consistent.
+                    }
+                }["Hero.useCallback[startSession]"]);
+                // Capture the precise server-side stop reason. SESSION_STOPPED fires
+                // just before SESSION_DISCONNECTED with the exact enum value
+                // (MAX_DURATION_REACHED / IDLE_TIMEOUT / AGENT_HANG_UP / etc.). Now
+                // that auto-reconnect is gone we don't branch on this, but it's still
+                // logged so unexpected early ends are easy to diagnose.
+                session.on(AgentEventsEnum.SESSION_STOPPED, {
+                    "Hero.useCallback[startSession]": (e)=>{
+                        lastStopReasonRef.current = e?.stop_reason ?? null;
+                        console.log("[Hero] SESSION_STOPPED stop_reason=", e?.stop_reason);
                     }
                 }["Hero.useCallback[startSession]"]);
                 session.on(SessionEvent.SESSION_DISCONNECTED, {
                     "Hero.useCallback[startSession]": (reason)=>{
-                        console.log("[Hero] SESSION_DISCONNECTED:", reason);
+                        const now = Date.now();
+                        const ageSinceStart = sessionStartedAtRef.current ? ((now - sessionStartedAtRef.current) / 1000).toFixed(1) + "s" : "n/a";
+                        const ageSinceLive = sessionLiveAtRef.current ? ((now - sessionLiveAtRef.current) / 1000).toFixed(1) + "s" : "never went live";
+                        const stopReason = lastStopReasonRef.current;
+                        console.log("[Hero] SESSION_DISCONNECTED reason=" + reason + " stop_reason=" + (stopReason ?? "none") + " ageSinceStart=" + ageSinceStart + " ageSinceLive=" + ageSinceLive);
                         sessionRef.current = null;
                         setIsStreamReady(false);
+                        // Auto-reconnect was removed — every disconnect routes straight to
+                        // idle. The visitor clicks Start again if they want to keep going.
+                        // stop_reason is still logged above for diagnostics (e.g. spotting
+                        // an unexpected MAX_DURATION_REACHED that means the env var isn't
+                        // matching your LiveAvatar tier cap, or an IDLE_TIMEOUT that means
+                        // the keep-alive heartbeat needs tightening).
                         setUiState("idle");
                         void finaliseBackendSession();
                     }
@@ -727,6 +840,34 @@ function Hero() {
                         scheduleFlush();
                     }
                 }["Hero.useCallback[startSession]"]);
+                // Noise guard: mute the mic for the duration of every avatar utterance
+                // so background noise can't trip VAD and chop the avatar mid-sentence.
+                // Only auto-mute if the visitor hasn't already muted manually.
+                session.on(AgentEventsEnum.AVATAR_SPEAK_STARTED, {
+                    "Hero.useCallback[startSession]": ()=>{
+                        if (!userWantsMicOnRef.current) return;
+                        try {
+                            session.voiceChat.mute();
+                            avatarSpeakingMutedRef.current = true;
+                        } catch (e) {
+                            console.warn("[Hero] avatar-speak mute failed", e);
+                        }
+                    }
+                }["Hero.useCallback[startSession]"]);
+                session.on(AgentEventsEnum.AVATAR_SPEAK_ENDED, {
+                    "Hero.useCallback[startSession]": ()=>{
+                        // Only restore if we were the ones who muted. If the visitor flipped
+                        // the toggle mid-utterance, leave the mic where they put it.
+                        if (!avatarSpeakingMutedRef.current) return;
+                        avatarSpeakingMutedRef.current = false;
+                        if (!userWantsMicOnRef.current) return;
+                        try {
+                            session.voiceChat.unmute();
+                        } catch (e) {
+                            console.warn("[Hero] avatar-speak unmute failed", e);
+                        }
+                    }
+                }["Hero.useCallback[startSession]"]);
                 // Persist the session in the Laravel backend BEFORE the HeyGen
                 // handshake — if HeyGen fails or the user drops, we still have a
                 // Lead row and any partial transcript will land via the debounced
@@ -761,8 +902,16 @@ function Hero() {
                     if (!navigator.mediaDevices?.getUserMedia) {
                         throw new Error("Microphone API unavailable in this context (requires HTTPS or localhost).");
                     }
+                    // Enable browser-side noise suppression, echo cancellation and
+                    // auto-gain so the recorded audio doesn't capture every kid /
+                    // dog / lawnmower around the visitor. Defaults vary by browser;
+                    // setting these explicitly forces the cleanup pipeline on.
                     const stream = await navigator.mediaDevices.getUserMedia({
-                        audio: true
+                        audio: {
+                            echoCancellation: true,
+                            noiseSuppression: true,
+                            autoGainControl: true
+                        }
                     });
                     micStreamRef.current = stream;
                     const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm";
@@ -800,46 +949,88 @@ function Hero() {
         finaliseBackendSession,
         scheduleFlush
     ]);
+    // Pick whichever <video> element is actually on-screen. Both refs always
+    // exist in the React tree (we render both desktop and mobile stages and
+    // toggle visibility with Tailwind's `lg:hidden` / `hidden lg:flex`), so
+    // the desktop ref is set even on mobile — attaching to it would put the
+    // stream on a `display:none` element and the visitor sees a black box
+    // (this was the "avatar not showing on mobile" bug). 1024px matches
+    // Tailwind's `lg` breakpoint.
+    const pickActiveVideoRef = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useCallback"])({
+        "Hero.useCallback[pickActiveVideoRef]": ()=>{
+            if ("TURBOPACK compile-time falsy", 0) //TURBOPACK unreachable
+            ;
+            const isDesktop = window.matchMedia("(min-width: 1024px)").matches;
+            return (isDesktop ? desktopVideoRef.current : mobileVideoRef.current) ?? desktopVideoRef.current ?? mobileVideoRef.current;
+        }
+    }["Hero.useCallback[pickActiveVideoRef]"], []);
     // Attach stream to the visible <video> once ready, then try to unmute.
+    // Re-runs when the viewport crosses the lg breakpoint (rotation, devtools
+    // resize) so the stream follows the visible element instead of stranding
+    // on a hidden one.
     (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useEffect"])({
         "Hero.useEffect": ()=>{
             if (!isStreamReady) return;
             const session = sessionRef.current;
             if (!session) return;
-            const target = desktopVideoRef.current ?? mobileVideoRef.current;
-            if (!target) {
-                console.warn("[Hero] no <video> ref to attach to");
-                return;
-            }
-            console.log("[Hero] attaching stream to video element");
-            session.attach(target);
-            // Step 1: muted autoplay (always allowed by browsers).
-            target.muted = true;
-            target.play().then({
-                "Hero.useEffect": ()=>{
-                    console.log("[Hero] muted video.play() OK; trying to unmute");
-                    // Step 2: try to unmute. May still be blocked → user clicks the
-                    // "Click to enable sound" button rendered when audioOn=false.
-                    target.muted = false;
+            const attach = {
+                "Hero.useEffect.attach": ()=>{
+                    const target = pickActiveVideoRef();
+                    if (!target) {
+                        console.warn("[Hero] no <video> ref to attach to");
+                        return;
+                    }
+                    console.log("[Hero] attaching stream to video element", {
+                        isDesktop: ("TURBOPACK compile-time value", "object") !== "undefined" && window.matchMedia("(min-width: 1024px)").matches
+                    });
+                    session.attach(target);
+                    // Step 1: muted autoplay (always allowed by browsers).
+                    target.muted = true;
                     target.play().then({
-                        "Hero.useEffect": ()=>{
-                            console.log("[Hero] unmuted play() OK — audio is live");
-                            setAudioOn(true);
+                        "Hero.useEffect.attach": ()=>{
+                            console.log("[Hero] muted video.play() OK; trying to unmute");
+                            // Step 2: try to unmute. May still be blocked → user clicks the
+                            // "Click to enable sound" button rendered when audioOn=false.
+                            target.muted = false;
+                            target.play().then({
+                                "Hero.useEffect.attach": ()=>{
+                                    console.log("[Hero] unmuted play() OK — audio is live");
+                                    setAudioOn(true);
+                                }
+                            }["Hero.useEffect.attach"], {
+                                "Hero.useEffect.attach": (e)=>{
+                                    console.warn("[Hero] unmute blocked; user must click 'Enable sound'", e);
+                                    target.muted = true;
+                                    setAudioOn(false);
+                                }
+                            }["Hero.useEffect.attach"]);
                         }
-                    }["Hero.useEffect"], {
-                        "Hero.useEffect": (e)=>{
-                            console.warn("[Hero] unmute blocked; user must click 'Enable sound'", e);
-                            target.muted = true;
-                            setAudioOn(false);
-                        }
-                    }["Hero.useEffect"]);
+                    }["Hero.useEffect.attach"], {
+                        "Hero.useEffect.attach": (e)=>console.warn("[Hero] muted video.play() failed", e)
+                    }["Hero.useEffect.attach"]);
                 }
-            }["Hero.useEffect"], {
-                "Hero.useEffect": (e)=>console.warn("[Hero] muted video.play() failed", e)
-            }["Hero.useEffect"]);
+            }["Hero.useEffect.attach"];
+            attach();
+            // Re-attach if the active breakpoint changes mid-call (e.g. user rotates
+            // a tablet across 1024px). Without this, the stream stays bound to the
+            // now-hidden video element.
+            if ("TURBOPACK compile-time falsy", 0) //TURBOPACK unreachable
+            ;
+            const mql = window.matchMedia("(min-width: 1024px)");
+            const onChange = {
+                "Hero.useEffect.onChange": ()=>{
+                    console.log("[Hero] viewport crossed lg breakpoint — re-attaching");
+                    attach();
+                }
+            }["Hero.useEffect.onChange"];
+            mql.addEventListener("change", onChange);
+            return ({
+                "Hero.useEffect": ()=>mql.removeEventListener("change", onChange)
+            })["Hero.useEffect"];
         }
     }["Hero.useEffect"], [
-        isStreamReady
+        isStreamReady,
+        pickActiveVideoRef
     ]);
     // Reset audioOn when session ends.
     (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useEffect"])({
@@ -851,7 +1042,7 @@ function Hero() {
     ]);
     const enableAudio = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useCallback"])({
         "Hero.useCallback[enableAudio]": ()=>{
-            const target = desktopVideoRef.current ?? mobileVideoRef.current;
+            const target = pickActiveVideoRef();
             if (!target) return;
             target.muted = false;
             target.play().then({
@@ -867,10 +1058,12 @@ function Hero() {
                 }
             }["Hero.useCallback[enableAudio]"]);
         }
-    }["Hero.useCallback[enableAudio]"], []);
+    }["Hero.useCallback[enableAudio]"], [
+        pickActiveVideoRef
+    ]);
     const toggleAudio = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useCallback"])({
         "Hero.useCallback[toggleAudio]": ()=>{
-            const target = desktopVideoRef.current ?? mobileVideoRef.current;
+            const target = pickActiveVideoRef();
             if (!target) return;
             if (target.muted) {
                 enableAudio();
@@ -880,9 +1073,11 @@ function Hero() {
             }
         }
     }["Hero.useCallback[toggleAudio]"], [
-        enableAudio
+        enableAudio,
+        pickActiveVideoRef
     ]);
-    // Cleanup on unmount.
+    // Cleanup on unmount — tear down the live session so we don't leak the
+    // LiveAvatar concurrency slot or the mic recorder.
     (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useEffect"])({
         "Hero.useEffect": ()=>{
             return ({
@@ -893,6 +1088,47 @@ function Hero() {
         }
     }["Hero.useEffect"], [
         cleanupSession
+    ]);
+    // Mirror the selected industry into a ref so any later disconnect-time
+    // logic reads the visitor's current industry, not whichever one was
+    // active when an event listener was first attached.
+    (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useEffect"])({
+        "Hero.useEffect": ()=>{
+            activeIndustryRef.current = active;
+        }
+    }["Hero.useEffect"], [
+        active
+    ]);
+    // Keep-alive heartbeat. LiveAvatar enforces a server-side idle timeout
+    // whose threshold is NOT exposed in the token payload or the docs — it
+    // could be anywhere from ~15s to ~120s. 20s is a defensive cadence that
+    // sits inside even the most aggressive plausible window. Each call is
+    // cheap (a single API ping); the cost is worth not having sessions die
+    // mid-pause while the visitor is thinking. Fires only while live.
+    (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useEffect"])({
+        "Hero.useEffect": ()=>{
+            if (uiState !== "live") return;
+            const tick = {
+                "Hero.useEffect.tick": ()=>{
+                    const s = sessionRef.current;
+                    if (!s) return;
+                    s.keepAlive().catch({
+                        "Hero.useEffect.tick": (e)=>{
+                            console.warn("[Hero] keepAlive failed", e);
+                        }
+                    }["Hero.useEffect.tick"]);
+                }
+            }["Hero.useEffect.tick"];
+            // Fire immediately on entering live so the timer doesn't start counting
+            // down from the user's first long pause.
+            tick();
+            const id = setInterval(tick, 20_000);
+            return ({
+                "Hero.useEffect": ()=>clearInterval(id)
+            })["Hero.useEffect"];
+        }
+    }["Hero.useEffect"], [
+        uiState
     ]);
     // Swallow uncaught SessionApiError noise from the HeyGen SDK so it doesn't
     // hit Next.js's dev error overlay. Two leaks exist:
@@ -953,13 +1189,33 @@ function Hero() {
             })["Hero.useEffect"];
         }
     }["Hero.useEffect"], []);
-    // Fire-and-forget backend flush when the tab is closing. We can't await
-    // fetch() during beforeunload, but sendBeacon will queue the POST so the
-    // partial transcript still lands as a Lead instead of being lost.
+    // Fire-and-forget backend flush + LiveAvatar slot release when the tab is
+    // closing. We can't await fetch() during beforeunload, but sendBeacon will
+    // queue both POSTs so the partial transcript still lands as a Lead AND
+    // the LiveAvatar concurrency slot is released immediately instead of
+    // sitting "running" until the per-tier max-duration reaps it (which is
+    // what causes the next visitor to see "demo is busy").
     (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$index$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["useEffect"])({
         "Hero.useEffect": ()=>{
             const handler = {
                 "Hero.useEffect.handler": ()=>{
+                    // 1. Release the LiveAvatar concurrency slot. This is independent of
+                    //    the backend transcript flush — even if we have no backend
+                    //    session id we still want to free the LiveAvatar session.
+                    const liveAvatarId = liveAvatarSessionIdRef.current;
+                    if (liveAvatarId) {
+                        try {
+                            const stopFd = new FormData();
+                            stopFd.append("session_id", liveAvatarId);
+                            stopFd.append("reason", "USER_CLOSED");
+                            navigator.sendBeacon("/api/avatar/stop", stopFd);
+                        } catch  {
+                        // best-effort; nothing else to do during unload
+                        }
+                        liveAvatarSessionIdRef.current = null;
+                    }
+                    // 2. Flush the transcript to our backend so the partial conversation
+                    //    lands as a Lead.
                     const sessionId = backendSessionIdRef.current;
                     if (!sessionId || endedHandledRef.current) return;
                     endedHandledRef.current = true;
@@ -977,8 +1233,14 @@ function Hero() {
                 }
             }["Hero.useEffect.handler"];
             window.addEventListener("beforeunload", handler);
+            // `pagehide` is the reliable unload signal on iOS Safari where
+            // beforeunload doesn't always fire.
+            window.addEventListener("pagehide", handler);
             return ({
-                "Hero.useEffect": ()=>window.removeEventListener("beforeunload", handler)
+                "Hero.useEffect": ()=>{
+                    window.removeEventListener("beforeunload", handler);
+                    window.removeEventListener("pagehide", handler);
+                }
             })["Hero.useEffect"];
         }
     }["Hero.useEffect"], []);
@@ -989,6 +1251,8 @@ function Hero() {
             return;
         }
         if (uiState === "connecting" || uiState === "ending") {
+            // User is bailing out of an in-flight start; tear it down before
+            // launching the new one.
             await cleanupSession();
             setIsStreamReady(false);
             setUiState("idle");
@@ -1024,13 +1288,23 @@ function Hero() {
         // No active session yet — just toggle the visual state so the button
         // responds. When a session starts, voice chat events will reset it.
         if (!session) {
+            userWantsMicOnRef.current = isMuted; // about to flip below
             setIsMuted((v)=>!v);
             return;
         }
         try {
             if (isMuted) {
+                // User wants the mic on. Record the intent FIRST so the
+                // AVATAR_SPEAK_STARTED handler honours it even if it fires before
+                // the unmute completes.
+                userWantsMicOnRef.current = true;
+                // The visitor took control — abandon any in-flight auto-mute so we
+                // don't fight them when AVATAR_SPEAK_ENDED arrives.
+                avatarSpeakingMutedRef.current = false;
                 session.voiceChat.unmute();
             } else {
+                userWantsMicOnRef.current = false;
+                avatarSpeakingMutedRef.current = false;
                 session.voiceChat.mute();
             }
         // On success the SDK fires VoiceChatEvent.MUTED/UNMUTED which updates
@@ -1060,14 +1334,14 @@ function Hero() {
                                     className: "w-1.5 h-1.5 rounded-full bg-neon"
                                 }, void 0, false, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 843,
+                                    lineNumber: 1137,
                                     columnNumber: 13
                                 }, this),
                                 "Now available for all industries"
                             ]
                         }, void 0, true, {
                             fileName: "[project]/components/Hero.tsx",
-                            lineNumber: 842,
+                            lineNumber: 1136,
                             columnNumber: 11
                         }, this),
                         /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("h1", {
@@ -1078,20 +1352,20 @@ function Hero() {
                                     children: "Voice-Powered"
                                 }, void 0, false, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 848,
+                                    lineNumber: 1142,
                                     columnNumber: 13
                                 }, this),
                                 " ",
                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("br", {}, void 0, false, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 848,
+                                    lineNumber: 1142,
                                     columnNumber: 62
                                 }, this),
                                 " Websites!"
                             ]
                         }, void 0, true, {
                             fileName: "[project]/components/Hero.tsx",
-                            lineNumber: 847,
+                            lineNumber: 1141,
                             columnNumber: 11
                         }, this),
                         /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -1101,7 +1375,7 @@ function Hero() {
                                     className: "absolute w-[300px] h-[300px] bg-neon/10 rounded-full blur-[80px] -z-10 animate-pulse left-1/2 -translate-x-1/2 top-10"
                                 }, void 0, false, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 852,
+                                    lineNumber: 1146,
                                     columnNumber: 13
                                 }, this),
                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(AvatarStage, {
@@ -1115,7 +1389,7 @@ function Hero() {
                                     onToggleAudio: toggleAudio
                                 }, void 0, false, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 853,
+                                    lineNumber: 1147,
                                     columnNumber: 13
                                 }, this),
                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(ChatPanel, {
@@ -1126,13 +1400,13 @@ function Hero() {
                                     isMuted: isMuted
                                 }, void 0, false, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 863,
+                                    lineNumber: 1157,
                                     columnNumber: 13
                                 }, this)
                             ]
                         }, void 0, true, {
                             fileName: "[project]/components/Hero.tsx",
-                            lineNumber: 851,
+                            lineNumber: 1145,
                             columnNumber: 11
                         }, this),
                         /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -1143,7 +1417,7 @@ function Hero() {
                                     children: "Stop losing customers to missed calls. I answer enquiries, book appointments & capture leads — 24/7. You're looking at one right now."
                                 }, void 0, false, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 873,
+                                    lineNumber: 1167,
                                     columnNumber: 13
                                 }, this),
                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("p", {
@@ -1154,14 +1428,14 @@ function Hero() {
                                             strokeWidth: 1.5
                                         }, void 0, false, {
                                             fileName: "[project]/components/Hero.tsx",
-                                            lineNumber: 878,
+                                            lineNumber: 1172,
                                             columnNumber: 15
                                         }, this),
                                         uiState === "live" ? "Live — speak now." : "I'm listening! Speak to test the demo."
                                     ]
                                 }, void 0, true, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 877,
+                                    lineNumber: 1171,
                                     columnNumber: 13
                                 }, this),
                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
@@ -1173,7 +1447,7 @@ function Hero() {
                                             className: "absolute inset-x-0 top-0 h-1/2 glass-shine opacity-60 pointer-events-none"
                                         }, void 0, false, {
                                             fileName: "[project]/components/Hero.tsx",
-                                            lineNumber: 887,
+                                            lineNumber: 1181,
                                             columnNumber: 15
                                         }, this),
                                         /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -1184,28 +1458,28 @@ function Hero() {
                                                     strokeWidth: 1.5
                                                 }, void 0, false, {
                                                     fileName: "[project]/components/Hero.tsx",
-                                                    lineNumber: 890,
+                                                    lineNumber: 1184,
                                                     columnNumber: 19
                                                 }, this) : uiState === "live" ? /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$mic$2d$off$2e$mjs__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__MicOff$3e$__["MicOff"], {
                                                     className: "w-5 h-5",
                                                     strokeWidth: 1.5
                                                 }, void 0, false, {
                                                     fileName: "[project]/components/Hero.tsx",
-                                                    lineNumber: 892,
+                                                    lineNumber: 1186,
                                                     columnNumber: 19
                                                 }, this) : /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$mic$2e$mjs__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__Mic$3e$__["Mic"], {
                                                     className: "w-5 h-5 fill-black/10",
                                                     strokeWidth: 1.5
                                                 }, void 0, false, {
                                                     fileName: "[project]/components/Hero.tsx",
-                                                    lineNumber: 894,
+                                                    lineNumber: 1188,
                                                     columnNumber: 19
                                                 }, this),
                                                 buttonLabel
                                             ]
                                         }, void 0, true, {
                                             fileName: "[project]/components/Hero.tsx",
-                                            lineNumber: 888,
+                                            lineNumber: 1182,
                                             columnNumber: 15
                                         }, this),
                                         /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$arrow$2d$right$2e$mjs__$5b$app$2d$client$5d$__$28$ecmascript$29$__$3c$export__default__as__ArrowRight$3e$__["ArrowRight"], {
@@ -1213,19 +1487,19 @@ function Hero() {
                                             strokeWidth: 1.5
                                         }, void 0, false, {
                                             fileName: "[project]/components/Hero.tsx",
-                                            lineNumber: 898,
+                                            lineNumber: 1192,
                                             columnNumber: 15
                                         }, this)
                                     ]
                                 }, void 0, true, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 882,
+                                    lineNumber: 1176,
                                     columnNumber: 13
                                 }, this)
                             ]
                         }, void 0, true, {
                             fileName: "[project]/components/Hero.tsx",
-                            lineNumber: 872,
+                            lineNumber: 1166,
                             columnNumber: 11
                         }, this),
                         /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -1236,7 +1510,7 @@ function Hero() {
                                     children: "Pick your industry"
                                 }, void 0, false, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 903,
+                                    lineNumber: 1197,
                                     columnNumber: 13
                                 }, this),
                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -1258,12 +1532,12 @@ function Hero() {
                                                         className: `w-full h-full object-cover rounded-full transition-all duration-300 ${isActive ? "" : "filter grayscale opacity-70 group-hover:opacity-100"}`
                                                     }, void 0, false, {
                                                         fileName: "[project]/components/Hero.tsx",
-                                                        lineNumber: 919,
+                                                        lineNumber: 1213,
                                                         columnNumber: 23
                                                     }, this)
                                                 }, void 0, false, {
                                                     fileName: "[project]/components/Hero.tsx",
-                                                    lineNumber: 914,
+                                                    lineNumber: 1208,
                                                     columnNumber: 21
                                                 }, this),
                                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -1271,31 +1545,31 @@ function Hero() {
                                                     children: ind.label
                                                 }, void 0, false, {
                                                     fileName: "[project]/components/Hero.tsx",
-                                                    lineNumber: 929,
+                                                    lineNumber: 1223,
                                                     columnNumber: 21
                                                 }, this)
                                             ]
                                         }, ind.id, true, {
                                             fileName: "[project]/components/Hero.tsx",
-                                            lineNumber: 908,
+                                            lineNumber: 1202,
                                             columnNumber: 19
                                         }, this);
                                     })
                                 }, void 0, false, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 904,
+                                    lineNumber: 1198,
                                     columnNumber: 13
                                 }, this)
                             ]
                         }, void 0, true, {
                             fileName: "[project]/components/Hero.tsx",
-                            lineNumber: 902,
+                            lineNumber: 1196,
                             columnNumber: 11
                         }, this)
                     ]
                 }, void 0, true, {
                     fileName: "[project]/components/Hero.tsx",
-                    lineNumber: 841,
+                    lineNumber: 1135,
                     columnNumber: 9
                 }, this),
                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -1305,7 +1579,7 @@ function Hero() {
                             className: "absolute w-[400px] h-[400px] bg-neon/10 rounded-full blur-[100px] -z-10 animate-pulse"
                         }, void 0, false, {
                             fileName: "[project]/components/Hero.tsx",
-                            lineNumber: 940,
+                            lineNumber: 1234,
                             columnNumber: 11
                         }, this),
                         /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -1322,7 +1596,7 @@ function Hero() {
                                     onToggleAudio: toggleAudio
                                 }, void 0, false, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 942,
+                                    lineNumber: 1236,
                                     columnNumber: 13
                                 }, this),
                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$compiled$2f$react$2f$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["jsxDEV"])(ChatPanel, {
@@ -1333,34 +1607,34 @@ function Hero() {
                                     isMuted: isMuted
                                 }, void 0, false, {
                                     fileName: "[project]/components/Hero.tsx",
-                                    lineNumber: 952,
+                                    lineNumber: 1246,
                                     columnNumber: 13
                                 }, this)
                             ]
                         }, void 0, true, {
                             fileName: "[project]/components/Hero.tsx",
-                            lineNumber: 941,
+                            lineNumber: 1235,
                             columnNumber: 11
                         }, this)
                     ]
                 }, void 0, true, {
                     fileName: "[project]/components/Hero.tsx",
-                    lineNumber: 939,
+                    lineNumber: 1233,
                     columnNumber: 9
                 }, this)
             ]
         }, void 0, true, {
             fileName: "[project]/components/Hero.tsx",
-            lineNumber: 840,
+            lineNumber: 1134,
             columnNumber: 7
         }, this)
     }, void 0, false, {
         fileName: "[project]/components/Hero.tsx",
-        lineNumber: 839,
+        lineNumber: 1133,
         columnNumber: 5
     }, this);
 }
-_s1(Hero, "EDuODfF1stf4tU3uOnXxI0WRAFE=");
+_s1(Hero, "XinTCh3AWKCLpWusRAVM9g+EWYc=");
 _c2 = Hero;
 var _c, _c1, _c2;
 __turbopack_context__.k.register(_c, "AvatarStage");

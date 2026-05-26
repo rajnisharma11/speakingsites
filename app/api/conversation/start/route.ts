@@ -14,6 +14,7 @@ export async function POST(request: Request) {
 
   let body: {
     avatarType?: string;
+    agentSlug?: string;
     visitorName?: string;
     visitorEmail?: string;
     visitorPhone?: string;
@@ -34,6 +35,9 @@ export async function POST(request: Request) {
       },
       body: JSON.stringify({
         api_key: apiKey,
+        // agent_slug attributes the lead/transcript to the chosen avatar
+        // (niche or sales). avatar_type kept for backwards compatibility.
+        agent_slug: body.agentSlug ?? body.avatarType ?? null,
         avatar_type: body.avatarType ?? null,
         visitor_name: body.visitorName ?? null,
         visitor_email: body.visitorEmail ?? null,

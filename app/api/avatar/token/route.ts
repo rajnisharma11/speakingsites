@@ -12,6 +12,93 @@ const INDUSTRY_AVATAR_IDS: Record<string, string> = {
   salon: "09919247-f4b2-45d8-a75e-86fc2fceaebf", // Katya in Pink Suit
 };
 
+// Per-industry LiveAvatar contexts. EACH agent's training lives inside
+// its own LiveAvatar context (Contexts → New in https://app.liveavatar.com)
+// — the system prompt, opening_text, knowledge base, links and voice
+// settings are all configured there. Set the context_id for each
+// industry below via env (so the secret stays out of the repo). When a
+// visitor picks an industry, the matching context is passed to the
+// LiveAvatar token request and the avatar responds only from that
+// context's training — no cross-contamination between agents.
+//
+// Any industry without its own env var falls back to LIVEAVATAR_CONTEXT_ID
+// (the legacy single-context behaviour) so half-configured deployments
+// still work.
+const INDUSTRY_CONTEXT_ENV_KEYS: Record<string, string> = {
+  plumber: "LIVEAVATAR_CONTEXT_ID_PLUMBER",
+  lawyer: "LIVEAVATAR_CONTEXT_ID_LAWYER",
+  medical: "LIVEAVATAR_CONTEXT_ID_MEDICAL",
+  builder: "LIVEAVATAR_CONTEXT_ID_BUILDER",
+  salon: "LIVEAVATAR_CONTEXT_ID_SALON",
+};
+
+function resolveContextId(industry: string | undefined): {
+  contextId: string | null;
+  source: "industry" | "global" | "none";
+} {
+  if (industry) {
+    const envKey = INDUSTRY_CONTEXT_ENV_KEYS[industry];
+    if (envKey && process.env[envKey]) {
+      return { contextId: process.env[envKey]!, source: "industry" };
+    }
+  }
+  if (process.env.LIVEAVATAR_CONTEXT_ID) {
+    return {
+      contextId: process.env.LIVEAVATAR_CONTEXT_ID,
+      source: "global",
+    };
+  }
+  return { contextId: null, source: "none" };
+}
+
+// Look up the chosen agent's runtime config from the Laravel backend. This is
+// now the source of truth for which HeyGen avatar + LiveAvatar context an
+// agent uses — each agent has its own context_id, which is what keeps its
+// knowledge/persona isolated from the other agents. Returns null (and we fall
+// back to the env-var mapping below) if the backend is unreachable or the
+// agent isn't found, so the demo never hard-fails on a backend hiccup.
+async function fetchAgentRuntime(slug: string | undefined): Promise<{
+  heygenAvatarId: string | null;
+  contextId: string | null;
+} | null> {
+  if (!slug) return null;
+  const backendUrl = process.env.BACKEND_URL;
+  const apiKey = process.env.BACKEND_EMBED_API_KEY;
+  if (!backendUrl || !apiKey) return null;
+  try {
+    const res = await fetch(
+      backendUrl.replace(/\/+$/, "") +
+        "/api/widget/agents?fields=runtime&api_key=" +
+        encodeURIComponent(apiKey),
+      { headers: { Accept: "application/json" }, cache: "no-store" },
+    );
+    if (!res.ok) return null;
+    type AgentRuntime = {
+      slug: string;
+      heygen_avatar_id: string | null;
+      liveavatar_context_id: string | null;
+    };
+    const json = (await res.json()) as {
+      agents?: AgentRuntime[];
+      sales_agent?: AgentRuntime | null;
+    };
+    // The sales avatar lives under `sales_agent`, not in the niche `agents`
+    // list — search both so the sales slug resolves its runtime config too.
+    const all = [
+      ...(json.agents ?? []),
+      ...(json.sales_agent ? [json.sales_agent] : []),
+    ];
+    const agent = all.find((a) => a.slug === slug);
+    if (!agent) return null;
+    return {
+      heygenAvatarId: agent.heygen_avatar_id ?? null,
+      contextId: agent.liveavatar_context_id ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function POST(request: Request) {
   const apiKey = process.env.LIVEAVATAR_API_KEY;
   if (!apiKey) {
@@ -24,19 +111,33 @@ export async function POST(request: Request) {
   const isSandbox = process.env.LIVEAVATAR_IS_SANDBOX !== "false";
   const fallbackId = process.env.LIVEAVATAR_DEFAULT_AVATAR_ID;
 
-  let body: { avatarId?: string; industry?: string } = {};
+  let body: { avatarId?: string; industry?: string; agentSlug?: string } = {};
   try {
     body = await request.json();
   } catch {
     // empty body is fine
   }
 
-  // Resolve avatar: explicit avatarId wins; otherwise industry → map; otherwise default.
+  // agentSlug is the new identifier; industry is kept as an alias so older
+  // callers keep working. Either maps to a backend agent slug.
+  const slug = body.agentSlug ?? body.industry;
+  const agent = await fetchAgentRuntime(slug);
+
+  // Resolve avatar: explicit avatarId wins; then the backend agent's avatar;
+  // then the legacy industry → map; otherwise the default.
   let avatarId = body.avatarId ?? null;
-  let resolvedSource: "explicit" | "industry" | "default" | "sandbox-override" =
-    "explicit";
-  if (!avatarId && body.industry && INDUSTRY_AVATAR_IDS[body.industry]) {
-    avatarId = INDUSTRY_AVATAR_IDS[body.industry];
+  let resolvedSource:
+    | "explicit"
+    | "agent"
+    | "industry"
+    | "default"
+    | "sandbox-override" = "explicit";
+  if (!avatarId && agent?.heygenAvatarId) {
+    avatarId = agent.heygenAvatarId;
+    resolvedSource = "agent";
+  }
+  if (!avatarId && slug && INDUSTRY_AVATAR_IDS[slug]) {
+    avatarId = INDUSTRY_AVATAR_IDS[slug];
     resolvedSource = "industry";
   }
   if (!avatarId) {
@@ -83,6 +184,19 @@ export async function POST(request: Request) {
     message?: string;
   };
 
+  // Per-industry context — picks the right agent's training (system
+  // prompt, knowledge base, opening_text, voice) for the requested
+  // industry. Falls back to LIVEAVATAR_CONTEXT_ID if no per-industry
+  // value is configured, falls back to omitting the field if neither is
+  // set (LiveAvatar then uses the avatar's default persona).
+  // The agent's own context wins (per-agent isolation). Fall back to the
+  // env-var per-industry / global context only when the agent has none set.
+  const envContext = resolveContextId(slug);
+  const contextId = agent?.contextId ?? envContext.contextId;
+  const contextSource: "agent" | "industry" | "global" | "none" = agent?.contextId
+    ? "agent"
+    : envContext.source;
+
   // Builds the request body. Pulled out because the cap-exceeded retry
   // needs to rebuild it with a lower max_session_duration.
   const buildBody = (capSeconds: number | null) =>
@@ -90,9 +204,7 @@ export async function POST(request: Request) {
       mode: "FULL",
       avatar_id: avatarId,
       avatar_persona: {
-        ...(process.env.LIVEAVATAR_CONTEXT_ID && {
-          context_id: process.env.LIVEAVATAR_CONTEXT_ID,
-        }),
+        ...(contextId && { context_id: contextId }),
         language: "en",
       },
       is_sandbox: isSandbox,
@@ -170,5 +282,13 @@ export async function POST(request: Request) {
     // Exposed for diagnostics: the actual cap LiveAvatar accepted, which
     // may be lower than what was requested if the retry path kicked in.
     maxSessionDuration: effectiveMaxDuration,
+    // Which agent's training was used. "industry" = per-industry context
+    // (correct), "global" = single shared context (legacy fallback),
+    // "none" = no context configured (avatar uses its built-in persona,
+    // probably not what you want for a trained agent).
+    contextId,
+    contextSource,
+    agentSlug: slug ?? null,
+    industry: body.industry ?? null,
   });
 }

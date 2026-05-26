@@ -29,7 +29,14 @@ export async function POST(request: Request) {
   if (typeof transcript === "string") {
     forward.append("transcript", transcript);
   }
-  for (const field of ["visitor_name", "visitor_email", "visitor_phone"]) {
+  for (const field of [
+    "visitor_name",
+    "visitor_email",
+    "visitor_phone",
+    "visitor_business",
+    "visitor_industry",
+    "visitor_interest",
+  ]) {
     const v = incoming.get(field);
     if (typeof v === "string" && v !== "") {
       forward.append(field, v);

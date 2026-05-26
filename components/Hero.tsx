@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowRight,
@@ -13,9 +12,15 @@ import {
 } from "lucide-react";
 import type { LiveAvatarSession as LiveAvatarSessionType } from "@heygen/liveavatar-web-sdk";
 
-type Industry = "plumber" | "lawyer" | "medical" | "builder" | "salon";
+// An agent's slug. Agents are configured per client in the backend now, so
+// this is an open-ended string rather than a fixed union.
+type Industry = string;
 
-const INDUSTRIES: { id: Industry; label: string; icon: string }[] = [
+type AgentOption = { id: Industry; label: string; icon: string };
+
+// Fallback avatar picker, used only if the backend agent list is unreachable
+// or empty so the marketing page never renders an empty picker.
+const FALLBACK_INDUSTRIES: AgentOption[] = [
   { id: "plumber", label: "Plumber", icon: "/images/Plumbericon.png" },
   { id: "lawyer", label: "Lawyer", icon: "/images/lawyericon.png" },
   { id: "medical", label: "Medical", icon: "/images/nurseicon.png" },
@@ -277,10 +282,56 @@ export function Hero() {
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [isMuted, setIsMuted] = useState(true);
   const [audioOn, setAudioOn] = useState(false);
+  // Disables the avatar tabs during a connect/switch (+ a short cooldown after)
+  // so a burst of clicks can't spawn overlapping sessions / trip the limit.
+  const [tabsLocked, setTabsLocked] = useState(false);
+  const [industries, setIndustries] = useState<AgentOption[]>(FALLBACK_INDUSTRIES);
+
+  // Load the avatar picker from the backend (per-client agents). Each entry's
+  // id is the agent slug, which is what we pass to the token + conversation
+  // endpoints. Falls back to FALLBACK_INDUSTRIES if the request fails or
+  // returns nothing.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/agents");
+        if (!res.ok) return;
+        const json = (await res.json()) as {
+          agents?: { slug: string; name: string; icon: string | null }[];
+        };
+        const list: AgentOption[] = (json.agents ?? [])
+          .filter((a) => a.slug && a.name)
+          .map((a) => ({
+            id: a.slug,
+            label: a.name,
+            icon: a.icon || "/images/Plumbericon.png",
+          }));
+        if (!cancelled && list.length > 0) {
+          setIndustries(list);
+          // Keep the current selection if it's still offered; otherwise pick
+          // the first agent so the picker always has a valid active item.
+          setActive((cur) => (list.some((x) => x.id === cur) ? cur : list[0].id));
+        }
+      } catch {
+        // keep the fallback list
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const desktopVideoRef = useRef<HTMLVideoElement>(null);
   const mobileVideoRef = useRef<HTMLVideoElement>(null);
   const sessionRef = useRef<LiveAvatarSessionType | null>(null);
+  // Set synchronously the instant a start begins, so a fast second tab click
+  // can't kick off an overlapping session during the ~1–2s token fetch (before
+  // sessionRef is assigned). Without this, two sessions race for one <video>
+  // and the avatar shows black. Cleared once sessionRef takes over, or on error.
+  const startingRef = useRef(false);
+  // Timer handle for the post-switch tab cooldown (cleared on unmount).
+  const tabLockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Backend persistence refs (Laravel widget conversation API).
   const backendSessionIdRef = useRef<string | null>(null);
@@ -466,10 +517,11 @@ export function Hero() {
 
   const startSession = useCallback(async (industry: Industry) => {
     console.log("[Hero] startSession() called", { industry });
-    if (sessionRef.current) {
-      console.warn("[Hero] aborting: sessionRef still set");
+    if (sessionRef.current || startingRef.current) {
+      console.warn("[Hero] aborting: a session is already starting/active");
       return;
     }
+    startingRef.current = true;
     setErrorMessage(null);
     setIsStreamReady(false);
     setUiState("connecting");
@@ -502,12 +554,20 @@ export function Hero() {
         // lower than LIVEAVATAR_MAX_SESSION_DURATION if the token route's
         // cap-exceeded retry path kicked in. Null if no cap was sent.
         maxSessionDuration: number | null;
+        // Per-industry context — proves the right agent's training was
+        // used. "industry" is the desired source; "global" means the
+        // per-industry env var isn't set yet; "none" means no context at
+        // all (avatar will use its built-in persona, not trained config).
+        contextId: string | null;
+        contextSource: "agent" | "industry" | "global" | "none";
+        agentSlug: string | null;
+        industry: string | null;
       };
       const requestToken = async (): Promise<TokenPayload> => {
         const res = await fetch("/api/avatar/token", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ industry }),
+          body: JSON.stringify({ agentSlug: industry }),
         });
         if (!res.ok) {
           const j = await res.json().catch(() => ({}));
@@ -561,6 +621,8 @@ export function Hero() {
         voiceChat: true,
       });
       sessionRef.current = session;
+      // sessionRef now guards re-entry; release the synchronous start lock.
+      startingRef.current = false;
 
       session.on(SessionEvent.SESSION_STREAM_READY, () => {
         console.log("[Hero] SESSION_STREAM_READY");
@@ -720,7 +782,9 @@ export function Hero() {
         const res = await fetch("/api/conversation/start/", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ avatarType: industry }),
+          // industry is the agent slug — send it as agentSlug so the lead is
+          // attributed to the chosen avatar (niche or sales) in the backend.
+          body: JSON.stringify({ avatarType: industry, agentSlug: industry }),
         });
         if (res.ok) {
           const j = (await res.json()) as { sessionId: string };
@@ -784,6 +848,9 @@ export function Hero() {
       setErrorMessage(msg);
       setUiState("error");
       sessionRef.current = null;
+      // Released so the visitor can retry after a failed start (e.g. the
+      // token fetch threw before a session object was ever created).
+      startingRef.current = false;
       // Flush whatever we captured and finalise the row so the failed
       // attempt still appears as a Lead (with whatever transcript exists).
       void finaliseBackendSession();
@@ -908,6 +975,7 @@ export function Hero() {
   useEffect(() => {
     return () => {
       void cleanupSession();
+      if (tabLockTimerRef.current) clearTimeout(tabLockTimerRef.current);
     };
   }, [cleanupSession]);
 
@@ -924,12 +992,38 @@ export function Hero() {
   // sits inside even the most aggressive plausible window. Each call is
   // cheap (a single API ping); the cost is worth not having sessions die
   // mid-pause while the visitor is thinking. Fires only while live.
+  //
+  // Two skip conditions avoid racing the server's session-end:
+  //   1. If we know maxSessionDuration and we're within 5s of it, the
+  //      server is about to kill the session and our heartbeat would land
+  //      mid-teardown — 400 "session no longer active" in the network
+  //      panel. Skip the ping; we're not saving anything anyway.
+  //   2. SDK errors with status 400/403/404 are caught silently for the
+  //      same race-window reason (server killed it just before our ping
+  //      reached it; SESSION_DISCONNECTED arrives shortly after).
+  // Anything else surfaces as a real warning.
   useEffect(() => {
     if (uiState !== "live") return;
     const tick = () => {
       const s = sessionRef.current;
       if (!s) return;
-      s.keepAlive().catch((e) => {
+      const max = s.maxSessionDuration;
+      const liveAt = sessionLiveAtRef.current;
+      if (max != null && liveAt != null) {
+        const elapsedSec = (Date.now() - liveAt) / 1000;
+        if (elapsedSec >= max - 5) {
+          console.log(
+            "[Hero] skipping keepAlive — within 5s of maxSessionDuration",
+          );
+          return;
+        }
+      }
+      s.keepAlive().catch((e: unknown) => {
+        const status =
+          typeof e === "object" && e !== null && "status" in e
+            ? (e as { status?: unknown }).status
+            : undefined;
+        if (status === 400 || status === 403 || status === 404) return;
         console.warn("[Hero] keepAlive failed", e);
       });
     };
@@ -962,12 +1056,21 @@ export function Hero() {
       return /Session not found|concurrency limit|API request failed/i.test(msg);
     };
 
+    // preventDefault alone only silences the console default — Next 16's dev
+    // overlay registers its OWN unhandledrejection/error listener that still
+    // fires and pops the red "Runtime Error" screen. stopImmediatePropagation
+    // (in the capture phase, which runs first) stops the event before it ever
+    // reaches the overlay's handler.
     const onRejection = (e: PromiseRejectionEvent) => {
-      if (isSdkSessionError(e.reason)) e.preventDefault();
+      if (isSdkSessionError(e.reason)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }
     };
     const onError = (e: ErrorEvent) => {
       if (isSdkSessionError(e.error) || /Session not found|concurrency limit/i.test(e.message ?? "")) {
         e.preventDefault();
+        e.stopImmediatePropagation();
       }
     };
 
@@ -1063,8 +1166,21 @@ export function Hero() {
   };
 
   const onIndustryClick = async (next: Industry) => {
+    // Ignore clicks while a switch is in flight or cooling down; and ignore a
+    // re-click of the avatar that's already live/connecting.
+    if (tabsLocked) return;
+    if (next === active && (uiState === "live" || uiState === "connecting")) return;
     setActive(next);
     if (uiState === "live" || uiState === "connecting") {
+      // Lock the tabs for a short cooldown so the switch can connect without a
+      // second click racing it. uiState (connecting/ending) keeps them locked
+      // during the switch itself; the timer adds the post-switch grace period.
+      setTabsLocked(true);
+      if (tabLockTimerRef.current) clearTimeout(tabLockTimerRef.current);
+      tabLockTimerRef.current = setTimeout(() => {
+        tabLockTimerRef.current = null;
+        setTabsLocked(false);
+      }, 2500);
       setUiState("ending");
       await cleanupSession();
       setIsStreamReady(false);
@@ -1119,6 +1235,10 @@ export function Hero() {
       setIsMuted((v) => !v);
     }
   };
+
+  // Tabs are locked while connecting/ending (so no competing session starts)
+  // and for the brief cooldown after a switch.
+  const tabsDisabled = tabsLocked || uiState === "connecting" || uiState === "ending";
 
   const buttonLabel =
     uiState === "live"
@@ -1196,21 +1316,29 @@ export function Hero() {
           <div className="pt-4 sm:pt-8">
             <p className="text-xs font-medium text-gray-500 uppercase tracking-widest mb-4 sm:mb-6">Pick your industry</p>
             <div className="flex flex-wrap gap-3 sm:gap-6">
-              {INDUSTRIES.map((ind) => {
+              {industries.map((ind) => {
                 const isActive = active === ind.id;
                 return (
                   <button
                     type="button"
                     key={ind.id}
                     onClick={() => void onIndustryClick(ind.id)}
-                    className={`avatar-btn ${isActive ? "avatar-active" : ""} flex flex-col items-center gap-2 sm:gap-3 group cursor-pointer transition-all`}
+                    disabled={tabsDisabled}
+                    aria-disabled={tabsDisabled}
+                    className={`avatar-btn ${isActive ? "avatar-active" : ""} flex flex-col items-center gap-2 sm:gap-3 group transition-all ${
+                      tabsDisabled && !isActive ? "opacity-40 cursor-not-allowed" : "cursor-pointer"
+                    }`}
                   >
                     <div
                       className={`avatar-ring w-12 h-12 sm:w-16 sm:h-16 rounded-full p-0.5 overflow-hidden relative transition-all duration-300 bg-black ${
                         isActive ? "transform scale-110" : "border border-white/20 group-hover:border-[#ccff00]"
                       }`}
                     >
-                      <Image
+                      {/* Icons are admin-configured (may be remote backend
+                          URLs), so a plain <img> avoids next/image's domain
+                          allowlist. */}
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
                         src={ind.icon}
                         alt={ind.label}
                         width={64}
