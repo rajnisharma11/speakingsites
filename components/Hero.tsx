@@ -28,6 +28,21 @@ const FALLBACK_INDUSTRIES: AgentOption[] = [
   { id: "salon", label: "Salon", icon: "/images/Plasterericon.png" },
 ];
 
+// Industries rendered via a self-contained LiveAvatar *embed* (published
+// widget) instead of the SDK session path. An embed carries its own avatar,
+// voice, context, mic and chat UI and authenticates via the publish — not via
+// LIVEAVATAR_API_KEY — so it works even when the avatar lives in a *different*
+// LiveAvatar account than our runtime key. Plumber's bespoke avatar
+// (bb2dad53-…, voice 13ff8f9e-…) lives in such an account, so we embed it
+// directly rather than wiring it through the SDK, which would fail with
+// "avatar not found / no access to voice" under our key.
+const EMBED_URLS: Record<Industry, string> = {
+  // orientation=horizontal — the published widget only renders in horizontal
+  // mode; vertical comes up blank.
+  plumber:
+    "https://embed.liveavatar.com/v1/633810bd-987c-4114-8766-c70f848fba84?orientation=horizontal",
+};
+
 type UiState = "idle" | "connecting" | "live" | "ending" | "error";
 
 type ChatMsg = { sender: "user" | "avatar"; text: string; ts: number };
@@ -165,6 +180,24 @@ function AvatarStage({
           <p className="text-sm text-red-300">{errorMessage ?? "Something went wrong."}</p>
         </div>
       )}
+    </div>
+  );
+}
+
+// Renders a published LiveAvatar embed for industries listed in EMBED_URLS.
+// The iframe is fully self-contained (its own avatar, mic and chat), so it
+// replaces both AvatarStage and ChatPanel for that industry. `allow="microphone"`
+// is required for the embed's voice chat to work.
+function EmbedStage({ src, label }: { src: string; label: string }) {
+  return (
+    <div className="hero-avatar relative flex items-center justify-center h-[560px] w-full mx-auto rounded-[10px] overflow-hidden bg-black">
+      <iframe
+        src={src}
+        allow="microphone"
+        scrolling="no"
+        title={`${label} LiveAvatar Embed`}
+        className="w-full aspect-video border-0 overflow-hidden"
+      />
     </div>
   );
 }
@@ -501,10 +534,20 @@ export function Hero() {
     const s = sessionRef.current;
     sessionRef.current = null;
     if (!s) return;
+    // Only stop a session that's actually live. Calling stop() on a session
+    // that already disconnected — or that LiveAvatar reaped server-side after
+    // an idle/short window — fires POST /v1/sessions/stop and 404s. It's
+    // harmless (caught below) but prints a red error in the console on every
+    // industry switch. Gating on the SDK's own state keeps the console clean
+    // during the normal teardown→restart of a switch.
     try {
-      await s.stop();
+      const { SessionState } = await import("@heygen/liveavatar-web-sdk");
+      const live =
+        s.state === SessionState.CONNECTED ||
+        s.state === SessionState.CONNECTING;
+      if (live) await s.stop();
     } catch {
-      // already disconnected
+      // already disconnected / reaped — nothing to clean up
     }
   }, [finaliseBackendSession]);
 
@@ -1147,6 +1190,9 @@ export function Hero() {
 
   const onPrimaryClick = async () => {
     console.log("[Hero] primary button clicked, uiState =", uiState);
+    // Embed industries run entirely inside the iframe — there's no SDK session
+    // to start or stop, so the primary button is a no-op for them.
+    if (EMBED_URLS[active]) return;
     if (uiState === "live") {
       await stopSession();
       return;
@@ -1162,6 +1208,7 @@ export function Hero() {
   };
 
   const onChatNowClick = () => {
+    if (EMBED_URLS[active]) return;
     void startSession(active);
   };
 
@@ -1184,7 +1231,13 @@ export function Hero() {
       setUiState("ending");
       await cleanupSession();
       setIsStreamReady(false);
-      await startSession(next);
+      // Switching to an embed industry: tear the SDK session down but don't
+      // start a new one — the iframe handles that industry on its own.
+      if (EMBED_URLS[next]) {
+        setUiState("idle");
+      } else {
+        await startSession(next);
+      }
     }
   };
 
@@ -1240,6 +1293,11 @@ export function Hero() {
   // and for the brief cooldown after a switch.
   const tabsDisabled = tabsLocked || uiState === "connecting" || uiState === "ending";
 
+  // The active industry renders via a self-contained embed iframe rather than
+  // the SDK session path.
+  const embedSrc = EMBED_URLS[active];
+  const isEmbedActive = Boolean(embedSrc);
+
   const buttonLabel =
     uiState === "live"
       ? "END CALL"
@@ -1264,23 +1322,29 @@ export function Hero() {
 
           <div className="lg:hidden block w-full max-w-sm mx-auto my-10 relative">
             <div className="absolute w-[300px] h-[300px] bg-neon/10 rounded-full blur-[80px] -z-10 animate-pulse left-1/2 -translate-x-1/2 top-10" />
-            <AvatarStage
-              videoRef={mobileVideoRef}
-              uiState={uiState}
-              isStreamReady={isStreamReady}
-              errorMessage={errorMessage}
-              onStart={onChatNowClick}
-              audioOn={audioOn}
-              onEnableAudio={enableAudio}
-              onToggleAudio={toggleAudio}
-            />
-            <ChatPanel
-              uiState={uiState}
-              messages={messages}
-              onSend={onSendText}
-              onToggleMute={onToggleMute}
-              isMuted={isMuted}
-            />
+            {isEmbedActive ? (
+              <EmbedStage src={embedSrc} label={active} />
+            ) : (
+              <>
+                <AvatarStage
+                  videoRef={mobileVideoRef}
+                  uiState={uiState}
+                  isStreamReady={isStreamReady}
+                  errorMessage={errorMessage}
+                  onStart={onChatNowClick}
+                  audioOn={audioOn}
+                  onEnableAudio={enableAudio}
+                  onToggleAudio={toggleAudio}
+                />
+                <ChatPanel
+                  uiState={uiState}
+                  messages={messages}
+                  onSend={onSendText}
+                  onToggleMute={onToggleMute}
+                  isMuted={isMuted}
+                />
+              </>
+            )}
           </div>
 
           <div className="max-w-lg">
@@ -1290,27 +1354,35 @@ export function Hero() {
 
             <p className="text-sm text-neon mb-6 sm:mb-8 flex items-center gap-2">
               <Volume2 className="w-4 h-4" strokeWidth={1.5} />
-              {uiState === "live" ? "Live — speak now." : "I'm listening! Speak to test the demo."}
+              {isEmbedActive
+                ? "Tap the avatar to start talking."
+                : uiState === "live"
+                  ? "Live — speak now."
+                  : "I'm listening! Speak to test the demo."}
             </p>
 
-            <button
-              type="button"
-              onClick={() => void onPrimaryClick()}
-              className="group relative inline-flex items-center gap-2 sm:gap-3 px-6 sm:px-8 py-3 sm:py-4 bg-[#ccff00] text-black text-xs sm:text-sm font-bold rounded-full shadow-[0_0_40px_-10px_rgba(204,255,0,0.6)] hover:shadow-[0_0_60px_-10px_rgba(204,255,0,0.8)] border-t border-white/50 hover:scale-105 hover:-translate-y-1 transition-all duration-300 overflow-hidden cursor-pointer"
-            >
-              <div className="absolute inset-x-0 top-0 h-1/2 glass-shine opacity-60 pointer-events-none" />
-              <span className="relative z-10 flex items-center gap-2">
-                {uiState === "connecting" || uiState === "ending" ? (
-                  <Loader2 className="w-5 h-5 animate-spin" strokeWidth={1.5} />
-                ) : uiState === "live" ? (
-                  <MicOff className="w-5 h-5" strokeWidth={1.5} />
-                ) : (
-                  <Mic className="w-5 h-5 fill-black/10" strokeWidth={1.5} />
-                )}
-                {buttonLabel}
-              </span>
-              <ArrowRight className="w-4 h-4 relative z-10 group-hover:translate-x-1 transition-transform" strokeWidth={1.5} />
-            </button>
+            {/* Embed industries drive the whole conversation from inside the
+                iframe, so the SDK start/stop button is hidden for them. */}
+            {!isEmbedActive && (
+              <button
+                type="button"
+                onClick={() => void onPrimaryClick()}
+                className="group relative inline-flex items-center gap-2 sm:gap-3 px-6 sm:px-8 py-3 sm:py-4 bg-[#ccff00] text-black text-xs sm:text-sm font-bold rounded-full shadow-[0_0_40px_-10px_rgba(204,255,0,0.6)] hover:shadow-[0_0_60px_-10px_rgba(204,255,0,0.8)] border-t border-white/50 hover:scale-105 hover:-translate-y-1 transition-all duration-300 overflow-hidden cursor-pointer"
+              >
+                <div className="absolute inset-x-0 top-0 h-1/2 glass-shine opacity-60 pointer-events-none" />
+                <span className="relative z-10 flex items-center gap-2">
+                  {uiState === "connecting" || uiState === "ending" ? (
+                    <Loader2 className="w-5 h-5 animate-spin" strokeWidth={1.5} />
+                  ) : uiState === "live" ? (
+                    <MicOff className="w-5 h-5" strokeWidth={1.5} />
+                  ) : (
+                    <Mic className="w-5 h-5 fill-black/10" strokeWidth={1.5} />
+                  )}
+                  {buttonLabel}
+                </span>
+                <ArrowRight className="w-4 h-4 relative z-10 group-hover:translate-x-1 transition-transform" strokeWidth={1.5} />
+              </button>
+            )}
           </div>
 
           <div className="pt-4 sm:pt-8">
@@ -1361,23 +1433,29 @@ export function Hero() {
         <div className="hidden lg:flex flex-col relative items-center justify-start">
           <div className="absolute w-[400px] h-[400px] bg-neon/10 rounded-full blur-[100px] -z-10 animate-pulse" />
           <div className="relative z-10 w-full max-w-sm mx-auto">
-            <AvatarStage
-              videoRef={desktopVideoRef}
-              uiState={uiState}
-              isStreamReady={isStreamReady}
-              errorMessage={errorMessage}
-              onStart={onChatNowClick}
-              audioOn={audioOn}
-              onEnableAudio={enableAudio}
-              onToggleAudio={toggleAudio}
-            />
-            <ChatPanel
-              uiState={uiState}
-              messages={messages}
-              onSend={onSendText}
-              onToggleMute={onToggleMute}
-              isMuted={isMuted}
-            />
+            {isEmbedActive ? (
+              <EmbedStage src={embedSrc} label={active} />
+            ) : (
+              <>
+                <AvatarStage
+                  videoRef={desktopVideoRef}
+                  uiState={uiState}
+                  isStreamReady={isStreamReady}
+                  errorMessage={errorMessage}
+                  onStart={onChatNowClick}
+                  audioOn={audioOn}
+                  onEnableAudio={enableAudio}
+                  onToggleAudio={toggleAudio}
+                />
+                <ChatPanel
+                  uiState={uiState}
+                  messages={messages}
+                  onSend={onSendText}
+                  onToggleMute={onToggleMute}
+                  isMuted={isMuted}
+                />
+              </>
+            )}
           </div>
         </div>
       </div>
