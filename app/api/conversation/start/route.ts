@@ -15,6 +15,7 @@ export async function POST(request: Request) {
   let body: {
     avatarType?: string;
     agentSlug?: string;
+    liveAvatarSessionId?: string;
     visitorName?: string;
     visitorEmail?: string;
     visitorPhone?: string;
@@ -39,6 +40,9 @@ export async function POST(request: Request) {
         // (niche or sales). avatar_type kept for backwards compatibility.
         agent_slug: body.agentSlug ?? body.avatarType ?? null,
         avatar_type: body.avatarType ?? null,
+        // LiveAvatar session id → lets the backend pull the transcript from the
+        // LiveAvatar API after the chat ends.
+        liveavatar_session_id: body.liveAvatarSessionId ?? null,
         visitor_name: body.visitorName ?? null,
         visitor_email: body.visitorEmail ?? null,
         visitor_phone: body.visitorPhone ?? null,

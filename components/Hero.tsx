@@ -29,13 +29,14 @@ const FALLBACK_INDUSTRIES: AgentOption[] = [
 ];
 
 // Industries rendered via a self-contained LiveAvatar *embed* (published
-// widget) instead of the SDK session path. An embed carries its own avatar,
-// voice, context, mic and chat UI and authenticates via the publish — not via
-// LIVEAVATAR_API_KEY — so it works even when the avatar lives in a *different*
-// LiveAvatar account than our runtime key. Plumber's bespoke avatar
-// (bb2dad53-…, voice 13ff8f9e-…) lives in such an account, so we embed it
-// directly rather than wiring it through the SDK, which would fail with
-// "avatar not found / no access to voice" under our key.
+// widget) instead of the SDK session path. The plumber keeps its bespoke
+// avatar (bb2dad53-…), which lives in LiveAvatar space acea0893 — a DIFFERENT
+// space than our LIVEAVATAR_API_KEY (0d6cbda0 → space 3cad2d32). The embed's
+// chats are therefore created and stored in space acea0893; to save them the
+// backend importer must run with that space's API key (see
+// LiveAvatarApiService / FetchLiveAvatarTranscript). With the current key the
+// chats are unreadable (verified: token mint for bb2dad53 → 400 "no access",
+// 0 of 262 historic sessions come from the embed).
 const EMBED_URLS: Record<Industry, string> = {
   // orientation=horizontal — the published widget only renders in horizontal
   // mode; vertical comes up blank.
@@ -827,7 +828,13 @@ export function Hero() {
           headers: { "Content-Type": "application/json" },
           // industry is the agent slug — send it as agentSlug so the lead is
           // attributed to the chosen avatar (niche or sales) in the backend.
-          body: JSON.stringify({ avatarType: industry, agentSlug: industry }),
+          // liveAvatarSessionId lets the backend pull the authoritative
+          // transcript from the LiveAvatar API after the chat ends.
+          body: JSON.stringify({
+            avatarType: industry,
+            agentSlug: industry,
+            liveAvatarSessionId: liveAvatarSessionIdRef.current,
+          }),
         });
         if (res.ok) {
           const j = (await res.json()) as { sessionId: string };
@@ -1169,6 +1176,9 @@ export function Hero() {
       const fd = new FormData();
       fd.append("session_id", sessionId);
       fd.append("transcript", JSON.stringify(transcriptRef.current));
+      // `liveAvatarId` was captured above before we null the ref for the stop
+      // beacon — use it (the ref is already null by here).
+      if (liveAvatarId) fd.append("liveavatar_session_id", liveAvatarId);
       if (visitorNameRef.current) fd.append("visitor_name", visitorNameRef.current);
       if (visitorEmailRef.current) fd.append("visitor_email", visitorEmailRef.current);
       if (visitorPhoneRef.current) fd.append("visitor_phone", visitorPhoneRef.current);
