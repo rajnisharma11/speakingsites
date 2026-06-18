@@ -29,10 +29,6 @@ export async function POST(request: Request) {
   if (typeof transcript === "string") {
     forward.append("transcript", transcript);
   }
-  const liveAvatarSessionId = incoming.get("liveavatar_session_id");
-  if (typeof liveAvatarSessionId === "string" && liveAvatarSessionId !== "") {
-    forward.append("liveavatar_session_id", liveAvatarSessionId);
-  }
   for (const field of [
     "visitor_name",
     "visitor_email",

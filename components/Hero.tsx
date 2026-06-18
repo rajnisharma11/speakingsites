@@ -28,20 +28,19 @@ const FALLBACK_INDUSTRIES: AgentOption[] = [
   { id: "salon", label: "Salon", icon: "/images/Plasterericon.png" },
 ];
 
-// Industries rendered via a self-contained LiveAvatar *embed* (published
-// widget) instead of the SDK session path. The plumber keeps its bespoke
-// avatar (bb2dad53-…), which lives in LiveAvatar space acea0893 — a DIFFERENT
-// space than our LIVEAVATAR_API_KEY (0d6cbda0 → space 3cad2d32). The embed's
-// chats are therefore created and stored in space acea0893; to save them the
-// backend importer must run with that space's API key (see
-// LiveAvatarApiService / FetchLiveAvatarTranscript). With the current key the
-// chats are unreadable (verified: token mint for bb2dad53 → 400 "no access",
-// 0 of 262 historic sessions come from the embed).
-const EMBED_URLS: Record<Industry, string> = {
-  // orientation=horizontal — the published widget only renders in horizontal
-  // mode; vertical comes up blank.
-  plumber:
-    "https://embed.liveavatar.com/v1/633810bd-987c-4114-8766-c70f848fba84?orientation=horizontal",
+// EMPTY — no industry uses the sealed iframe embed anymore.
+const EMBED_URLS: Record<Industry, string> = {};
+
+// Industries whose avatar is a PUBLISHED LiveAvatar embed living in a space we
+// hold no API key for, driven through the SDK (not the iframe) via a KEYLESS
+// embed session token (/api/avatar/embed-token → POST /v1/sessions/embed/token,
+// the same call the iframe makes). The plumber's bespoke "gpwalsh"/Jake avatar
+// (bb2dad53), voice (13ff8f9e) and context (27beb1a8) live in space acea0893,
+// which our API keys can't access — but the embed token returns a session for
+// that avatar anyway, so the SDK renders the REAL Jake face (object-fit cover →
+// no grey bars / no white footer) AND captures the transcript + lead.
+const EMBED_AVATAR_IDS: Record<Industry, string> = {
+  plumber: "633810bd-987c-4114-8766-c70f848fba84",
 };
 
 type UiState = "idle" | "connecting" | "live" | "ending" | "error";
@@ -607,7 +606,42 @@ export function Hero() {
         agentSlug: string | null;
         industry: string | null;
       };
+      // Published-embed agents (EMBED_AVATAR_IDS) mint a KEYLESS embed token for
+      // an avatar in a space we have no API key for (the gpwalsh plumber). The
+      // embed token already carries the avatar/voice/context, so there's nothing
+      // to resolve from the backend — we surface it in the same TokenPayload
+      // shape the rest of startSession expects.
+      const embedId = EMBED_AVATAR_IDS[industry];
       const requestToken = async (): Promise<TokenPayload> => {
+        if (embedId) {
+          const res = await fetch("/api/avatar/embed-token/", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ embedId }),
+          });
+          if (!res.ok) {
+            const j = await res.json().catch(() => ({}));
+            throw new Error(
+              j.error ?? `Embed token request failed (${res.status})`,
+            );
+          }
+          const ep = (await res.json()) as {
+            sessionToken: string;
+            sessionId: string;
+          };
+          return {
+            sessionToken: ep.sessionToken,
+            sessionId: ep.sessionId,
+            avatarId: "embed",
+            isSandbox: false,
+            resolvedSource: "embed",
+            maxSessionDuration: null,
+            contextId: null,
+            contextSource: "none",
+            agentSlug: industry,
+            industry,
+          };
+        }
         const res = await fetch("/api/avatar/token", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -828,13 +862,7 @@ export function Hero() {
           headers: { "Content-Type": "application/json" },
           // industry is the agent slug — send it as agentSlug so the lead is
           // attributed to the chosen avatar (niche or sales) in the backend.
-          // liveAvatarSessionId lets the backend pull the authoritative
-          // transcript from the LiveAvatar API after the chat ends.
-          body: JSON.stringify({
-            avatarType: industry,
-            agentSlug: industry,
-            liveAvatarSessionId: liveAvatarSessionIdRef.current,
-          }),
+          body: JSON.stringify({ avatarType: industry, agentSlug: industry }),
         });
         if (res.ok) {
           const j = (await res.json()) as { sessionId: string };
@@ -1176,9 +1204,6 @@ export function Hero() {
       const fd = new FormData();
       fd.append("session_id", sessionId);
       fd.append("transcript", JSON.stringify(transcriptRef.current));
-      // `liveAvatarId` was captured above before we null the ref for the stop
-      // beacon — use it (the ref is already null by here).
-      if (liveAvatarId) fd.append("liveavatar_session_id", liveAvatarId);
       if (visitorNameRef.current) fd.append("visitor_name", visitorNameRef.current);
       if (visitorEmailRef.current) fd.append("visitor_email", visitorEmailRef.current);
       if (visitorPhoneRef.current) fd.append("visitor_phone", visitorPhoneRef.current);
