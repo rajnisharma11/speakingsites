@@ -29,15 +29,54 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "embedId is required" }, { status: 400 });
   }
 
-  const upstream = await fetch(
-    "https://api.liveavatar.com/v1/sessions/embed/token",
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ embed_id: embedId, language: body.language ?? "en" }),
-      cache: "no-store",
-    },
-  );
+  // Guard + retry the upstream call. A transient blip (flaky WiFi, DNS, TLS, a
+  // brief LiveAvatar 5xx, or a timeout) shouldn't surface "Could not reach
+  // LiveAvatar token service" to the visitor — most clear up within a second.
+  // We retry network throws and 5xx with short backoff; a 4xx is a real client
+  // error and returns immediately. Each attempt has a 15s timeout. Only after
+  // every attempt fails do we return a clean 502 with the last error's detail.
+  const RETRY_DELAYS_MS = [300, 800]; // total attempts = delays + 1 = 3
+  let upstream: Response | null = null;
+  let lastErr: unknown = null;
+
+  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      const res = await fetch(
+        "https://api.liveavatar.com/v1/sessions/embed/token",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ embed_id: embedId, language: body.language ?? "en" }),
+          cache: "no-store",
+          signal: AbortSignal.timeout(15_000),
+        },
+      );
+      if (res.status >= 500 && attempt < RETRY_DELAYS_MS.length) {
+        lastErr = new Error(`LiveAvatar upstream ${res.status}`);
+        await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+        continue;
+      }
+      upstream = res;
+      break;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < RETRY_DELAYS_MS.length) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+        continue;
+      }
+    }
+  }
+
+  if (!upstream) {
+    const reason =
+      lastErr instanceof Error && lastErr.name === "TimeoutError"
+        ? "LiveAvatar token request timed out"
+        : "Could not reach LiveAvatar token service";
+    return NextResponse.json(
+      { error: reason, detail: lastErr instanceof Error ? lastErr.message : String(lastErr) },
+      { status: 502 },
+    );
+  }
 
   type EmbedTokenResponse = {
     code?: number;

@@ -43,6 +43,13 @@ const EMBED_AVATAR_IDS: Record<Industry, string> = {
   plumber: "633810bd-987c-4114-8766-c70f848fba84",
 };
 
+// Stop the avatar session after this long with no interaction (no speech from
+// either side, no page activity). A LiveAvatar slot is billed for as long as
+// it's open, and the keep-alive heartbeat below defeats LiveAvatar's own idle
+// timeout — so without this an abandoned session lives to the hard max-duration
+// cap. The visitor just clicks Start again if they walked away and came back.
+const IDLE_SHUTDOWN_MS = 20_000;
+
 type UiState = "idle" | "connecting" | "live" | "ending" | "error";
 
 type ChatMsg = { sender: "user" | "avatar"; text: string; ts: number };
@@ -378,6 +385,9 @@ export function Hero() {
   >([]);
   const endedHandledRef = useRef(false);
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Inactivity-shutdown timer (see IDLE_SHUTDOWN_MS). Restarted on every sign
+  // of interaction; when it elapses we stop the session ourselves.
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Visitor identity scraped from the user's own transcript. First non-empty
   // hit wins so a later utterance ("my wife's name is …") can't overwrite the
@@ -530,6 +540,10 @@ export function Hero() {
   }, [appendVisitorFields]);
 
   const cleanupSession = useCallback(async () => {
+    if (idleTimerRef.current) {
+      clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+    }
     await finaliseBackendSession();
     const s = sessionRef.current;
     sessionRef.current = null;
@@ -557,6 +571,24 @@ export function Hero() {
     setIsStreamReady(false);
     setUiState("idle");
   }, [cleanupSession]);
+
+  // Restart the inactivity countdown. Called on every sign of life: the
+  // visitor speaking, the avatar replying, or page interaction (see the
+  // activity listener effect). When it elapses we stop the session so an
+  // abandoned avatar stops billing.
+  const resetIdleTimer = useCallback(() => {
+    if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+    idleTimerRef.current = setTimeout(() => {
+      idleTimerRef.current = null;
+      if (!sessionRef.current) return;
+      console.log(
+        "[Hero] idle timeout — no interaction for " +
+          IDLE_SHUTDOWN_MS / 1000 +
+          "s, stopping session",
+      );
+      void stopSession();
+    }, IDLE_SHUTDOWN_MS);
+  }, [stopSession]);
 
   const startSession = useCallback(async (industry: Industry) => {
     console.log("[Hero] startSession() called", { industry });
@@ -721,6 +753,8 @@ export function Hero() {
               (session.sessionId ?? "n/a"),
           );
           setUiState("live");
+          // Begin the inactivity countdown the moment we're live.
+          resetIdleTimer();
           // Auto-unmute the mic so voice chat works immediately. The user
           // can still mute via the toggle in the chat panel. Without this,
           // visitors press "Chat now" and wonder why the avatar can't hear
@@ -774,6 +808,10 @@ export function Hero() {
         );
         sessionRef.current = null;
         setIsStreamReady(false);
+        if (idleTimerRef.current) {
+          clearTimeout(idleTimerRef.current);
+          idleTimerRef.current = null;
+        }
 
         // Auto-reconnect was removed — every disconnect routes straight to
         // idle. The visitor clicks Start again if they want to keep going.
@@ -807,6 +845,7 @@ export function Hero() {
           if (found.name && !visitorNameRef.current) visitorNameRef.current = found.name;
           if (found.email && !visitorEmailRef.current) visitorEmailRef.current = found.email;
           if (found.phone && !visitorPhoneRef.current) visitorPhoneRef.current = found.phone;
+          resetIdleTimer();
           scheduleFlush();
         },
       );
@@ -823,6 +862,7 @@ export function Hero() {
             content: e.text,
             timestamp: new Date().toISOString(),
           });
+          resetIdleTimer();
           scheduleFlush();
         },
       );
@@ -933,7 +973,7 @@ export function Hero() {
       // attempt still appears as a Lead (with whatever transcript exists).
       void finaliseBackendSession();
     }
-  }, [finaliseBackendSession, scheduleFlush]);
+  }, [finaliseBackendSession, scheduleFlush, resetIdleTimer]);
 
   // Pick whichever <video> element is actually on-screen. Both refs always
   // exist in the React tree (we render both desktop and mobile stages and
@@ -1112,6 +1152,20 @@ export function Hero() {
     return () => clearInterval(id);
   }, [uiState]);
 
+  // NOTE: only VOICE and CHAT reset the idle countdown (per product decision) —
+  // the visitor speaking / the avatar replying (USER_/AVATAR_TRANSCRIPTION) and
+  // typed chat (onSendText). Mouse / scroll / touch are deliberately IGNORED, so
+  // a session with no conversation closes after IDLE_SHUTDOWN_MS even if the
+  // cursor is moving. That's what stops credits leaking on an idle tab.
+
+  // Clear any pending idle timer on unmount so it can't fire into a dead tree.
+  useEffect(
+    () => () => {
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+    },
+    [],
+  );
+
   // Swallow uncaught SessionApiError noise from the HeyGen SDK so it doesn't
   // hit Next.js's dev error overlay. Two leaks exist:
   //   1) LiveAvatarSession.start() runs `console.error("Session start failed:", err)`
@@ -1279,6 +1333,8 @@ export function Hero() {
   const onSendText = (text: string) => {
     const session = sessionRef.current;
     if (!session) return;
+    // Typed chat counts as interaction — keep the session alive.
+    resetIdleTimer();
     // Don't add locally — the LiveAvatar backend will emit USER_TRANSCRIPTION
     // for this typed input and our listener will render it. Adding here
     // produces a duplicate "You: …" entry.
