@@ -122,7 +122,7 @@ function AvatarStage({
         playsInline
         autoPlay
         muted
-        className={`absolute inset-0 z-10 w-full h-full object-cover transition-opacity duration-300 ${
+        className={`absolute inset-0 z-10 w-full h-full object-contain transition-opacity duration-300 ${
           isStreamReady ? "opacity-100" : "opacity-0"
         }`}
       />
@@ -1267,13 +1267,28 @@ export function Hero() {
         // best-effort; nothing else to do during unload
       }
     };
+    // On mobile, locking the phone or switching apps often fires NEITHER
+    // beforeunload NOR pagehide — the page is just backgrounded, so the
+    // LiveAvatar session stays "running" server-side and keeps holding the
+    // single demo concurrency slot. The next visitor (or the same client
+    // coming back) then hits "demo is busy" until the per-tier max-duration
+    // finally reaps it — which is the "it works and then it doesn't work,
+    // restarting the phone fixes it" behaviour. `visibilitychange → hidden`
+    // is the one signal that reliably fires when a tab is backgrounded, so
+    // release the slot there too. The session ends on background (consistent
+    // with the existing idle shutdown); the visitor just taps Start again.
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") handler();
+    };
     window.addEventListener("beforeunload", handler);
     // `pagehide` is the reliable unload signal on iOS Safari where
     // beforeunload doesn't always fire.
     window.addEventListener("pagehide", handler);
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       window.removeEventListener("beforeunload", handler);
       window.removeEventListener("pagehide", handler);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, []);
 
