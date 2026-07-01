@@ -96,6 +96,72 @@ function extractVisitorInfo(text: string): {
   return out;
 }
 
+// Branded connect-time preloader. Replaces the bare "Connecting…" spinner the
+// client flagged as feeling like a dead wait ("still quite a delay waiting for
+// Jake to load"). Shows the chosen agent's face in a spinning ring, a status
+// line that advances through the real handshake stages, and a progress bar that
+// eases toward ~92% and holds — the last 8% is the stream actually appearing,
+// at which point this whole component unmounts (isStreamReady flips true). No
+// fake "100%": we never claim done before Jake is on screen.
+function AvatarPreloader({ icon, label }: { icon: string; label: string }) {
+  const STAGES = [
+    "Connecting…",
+    "Warming up the voice…",
+    "Syncing lip movement…",
+    "Almost ready…",
+  ];
+  const [stage, setStage] = useState(0);
+  const [progress, setProgress] = useState(10);
+
+  useEffect(() => {
+    const stageId = setInterval(() => {
+      setStage((s) => (s < STAGES.length - 1 ? s + 1 : s));
+    }, 1600);
+    // Ease toward 92% (never past it) so the bar keeps creeping during a long
+    // handshake instead of stalling at a fixed point.
+    const progId = setInterval(() => {
+      setProgress((p) => (p >= 92 ? p : p + Math.max(1, Math.round((92 - p) / 8))));
+    }, 350);
+    return () => {
+      clearInterval(stageId);
+      clearInterval(progId);
+    };
+    // STAGES is a stable literal; intentionally run once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-5 bg-black/80 px-8 text-center">
+      <div className="relative w-20 h-20">
+        <span className="absolute inset-0 rounded-full bg-neon/25 blur-xl animate-pulse" />
+        {/* Spinning neon ring around the agent's face. */}
+        <span className="absolute inset-0 rounded-full border-2 border-neon/20 border-t-neon animate-spin" />
+        <div className="absolute inset-1.5 rounded-full overflow-hidden bg-black">
+          {/* Agent icons may be remote backend URLs — plain <img> sidesteps
+              next/image's domain allowlist. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={icon}
+            alt={label}
+            className="w-full h-full object-cover animate-pulse"
+          />
+        </div>
+      </div>
+
+      <div className="w-full max-w-[220px] space-y-2">
+        <p className="text-sm font-medium text-white">{label} is joining…</p>
+        <p className="text-xs text-gray-400 min-h-[16px]">{STAGES[stage]}</p>
+        <div className="h-1.5 w-full rounded-full bg-white/10 overflow-hidden">
+          <div
+            className="h-full rounded-full bg-neon transition-[width] duration-300 ease-out"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AvatarStage({
   videoRef,
   uiState,
@@ -105,6 +171,8 @@ function AvatarStage({
   audioOn,
   onEnableAudio,
   onToggleAudio,
+  agentIcon,
+  agentLabel,
 }: {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   uiState: UiState;
@@ -114,6 +182,8 @@ function AvatarStage({
   audioOn: boolean;
   onEnableAudio: () => void;
   onToggleAudio: () => void;
+  agentIcon: string;
+  agentLabel: string;
 }) {
   return (
     <div className="hero-avatar relative overflow-hidden h-[400px] w-full max-w-[380px] mx-auto group rounded-[10px] bg-black">
@@ -168,10 +238,7 @@ function AvatarStage({
       )}
 
       {(uiState === "connecting" || (uiState === "live" && !isStreamReady)) && (
-        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/60">
-          <Loader2 className="w-10 h-10 text-neon animate-spin" strokeWidth={1.5} />
-          <p className="text-sm text-gray-300">Connecting…</p>
-        </div>
+        <AvatarPreloader icon={agentIcon} label={agentLabel} />
       )}
 
       {uiState === "ending" && (
@@ -892,65 +959,87 @@ export function Hero() {
         }
       });
 
-      // Persist the session in the Laravel backend BEFORE the HeyGen
-      // handshake — if HeyGen fails or the user drops, we still have a
-      // Lead row and any partial transcript will land via the debounced
-      // flush. Idempotent: each transcription flushes the same row.
-      try {
-        const res = await fetch("/api/conversation/start/", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          // industry is the agent slug — send it as agentSlug so the lead is
-          // attributed to the chosen avatar (niche or sales) in the backend.
-          body: JSON.stringify({ avatarType: industry, agentSlug: industry }),
-        });
-        if (res.ok) {
-          const j = (await res.json()) as { sessionId: string };
-          backendSessionIdRef.current = j.sessionId;
-          console.log("[Hero] backend session started", j.sessionId);
-        } else {
-          console.warn("[Hero] backend start non-OK", res.status);
-        }
-      } catch (e) {
-        console.warn("[Hero] backend start error", e);
-      }
+      // Kick off the backend lead-row persistence, the mic recording, AND the
+      // HeyGen handshake CONCURRENTLY. These used to run serially, so the
+      // avatar handshake (session.start) was blocked behind a Laravel round-
+      // trip AND a getUserMedia call that can pop a permission prompt — both of
+      // those were folded into the "waiting for Jake to load" delay the client
+      // reported. They're independent of the handshake, so we fire them and
+      // only await the avatar.
 
-      // Best-effort mic recording so the admin can listen to the user's
-      // side of the conversation in the Leads panel. HeyGen's avatar audio
-      // is rendered client-side and not captured here. Start BEFORE
-      // session.start() so we don't miss the opening seconds.
-      // `navigator.mediaDevices` is undefined in insecure contexts
-      // (anything other than localhost / HTTPS), so guard before touching it.
-      try {
-        if (!navigator.mediaDevices?.getUserMedia) {
-          throw new Error(
-            "Microphone API unavailable in this context (requires HTTPS or localhost).",
-          );
+      // Backend lead row — fire-and-forget. If HeyGen fails or the user drops
+      // we still get a Lead row; the transcript lands via the debounced flush
+      // once backendSessionIdRef is set (any transcription that fires before it
+      // resolves is simply re-flushed later, and finaliseBackendSession posts
+      // the full transcript at the end). Idempotent: each flush replaces the
+      // row.
+      void (async () => {
+        try {
+          const res = await fetch("/api/conversation/start/", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            // industry is the agent slug — send it as agentSlug so the lead is
+            // attributed to the chosen avatar (niche or sales) in the backend.
+            body: JSON.stringify({ avatarType: industry, agentSlug: industry }),
+          });
+          if (res.ok) {
+            const j = (await res.json()) as { sessionId: string };
+            backendSessionIdRef.current = j.sessionId;
+            console.log("[Hero] backend session started", j.sessionId);
+          } else {
+            console.warn("[Hero] backend start non-OK", res.status);
+          }
+        } catch (e) {
+          console.warn("[Hero] backend start error", e);
         }
-        // Enable browser-side noise suppression, echo cancellation and
-        // auto-gain so the recorded audio doesn't capture every kid /
-        // dog / lawnmower around the visitor. Defaults vary by browser;
-        // setting these explicitly forces the cleanup pipeline on.
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-        });
-        micStreamRef.current = stream;
-        const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-          ? "audio/webm;codecs=opus"
-          : "audio/webm";
-        const rec = new MediaRecorder(stream, { mimeType: mime });
-        rec.addEventListener("dataavailable", (ev) => {
-          if (ev.data && ev.data.size > 0) audioChunksRef.current.push(ev.data);
-        });
-        rec.start(1000);
-        recorderRef.current = rec;
-      } catch (e) {
-        console.warn("[Hero] mic recording unavailable", e);
-      }
+      })();
+
+      // Best-effort mic recording so the admin can listen to the user's side of
+      // the conversation in the Leads panel. HeyGen's avatar audio is rendered
+      // client-side and not captured here. Fire-and-forget so getUserMedia's
+      // permission prompt can't stall the avatar; it races the handshake, but
+      // the avatar greets first so the mic is virtually always live before the
+      // visitor replies. `navigator.mediaDevices` is undefined in insecure
+      // contexts (anything other than localhost / HTTPS), so guard first.
+      void (async () => {
+        try {
+          if (!navigator.mediaDevices?.getUserMedia) {
+            throw new Error(
+              "Microphone API unavailable in this context (requires HTTPS or localhost).",
+            );
+          }
+          // Enable browser-side noise suppression, echo cancellation and
+          // auto-gain so the recorded audio doesn't capture every kid /
+          // dog / lawnmower around the visitor. Defaults vary by browser;
+          // setting these explicitly forces the cleanup pipeline on.
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+            },
+          });
+          // The session may have been torn down while we waited for the mic
+          // permission — don't leave an orphaned stream open (cleanupSession
+          // already nulled micStreamRef, so it wouldn't be stopped otherwise).
+          if (!sessionRef.current) {
+            stream.getTracks().forEach((t) => t.stop());
+            return;
+          }
+          micStreamRef.current = stream;
+          const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+            ? "audio/webm;codecs=opus"
+            : "audio/webm";
+          const rec = new MediaRecorder(stream, { mimeType: mime });
+          rec.addEventListener("dataavailable", (ev) => {
+            if (ev.data && ev.data.size > 0) audioChunksRef.current.push(ev.data);
+          });
+          rec.start(1000);
+          recorderRef.current = rec;
+        } catch (e) {
+          console.warn("[Hero] mic recording unavailable", e);
+        }
+      })();
 
       await session.start();
       console.log("[Hero] session.start() resolved");
@@ -1103,6 +1192,18 @@ export function Hero() {
   useEffect(() => {
     activeIndustryRef.current = active;
   }, [active]);
+
+  // Warm the LiveAvatar SDK bundle on mount. Without this, the dynamic
+  // import("@heygen/liveavatar-web-sdk") inside startSession() downloads +
+  // parses several hundred KB of JS at click time — a big slice of the
+  // "delay waiting for Jake to load" the client reported. Prefetching here
+  // (idle, off the critical path) means the click goes straight to the token
+  // fetch + handshake; the import() in startSession then resolves from cache.
+  useEffect(() => {
+    void import("@heygen/liveavatar-web-sdk").catch(() => {
+      // best-effort warm-up; startSession imports again (cached) if it failed
+    });
+  }, []);
 
   // Keep-alive heartbeat. LiveAvatar enforces a server-side idle timeout
   // whose threshold is NOT exposed in the token payload or the docs — it
@@ -1404,6 +1505,11 @@ export function Hero() {
   const embedSrc = EMBED_URLS[active];
   const isEmbedActive = Boolean(embedSrc);
 
+  // Face + name for the connect-time preloader, drawn from the selected agent.
+  const activeAgent = industries.find((i) => i.id === active);
+  const activeIcon = activeAgent?.icon ?? "/images/Plumbericon.png";
+  const activeLabel = activeAgent?.label ?? "The avatar";
+
   const buttonLabel =
     uiState === "live"
       ? "END CALL"
@@ -1441,6 +1547,8 @@ export function Hero() {
                   audioOn={audioOn}
                   onEnableAudio={enableAudio}
                   onToggleAudio={toggleAudio}
+                  agentIcon={activeIcon}
+                  agentLabel={activeLabel}
                 />
                 <ChatPanel
                   uiState={uiState}
@@ -1552,6 +1660,8 @@ export function Hero() {
                   audioOn={audioOn}
                   onEnableAudio={enableAudio}
                   onToggleAudio={toggleAudio}
+                  agentIcon={activeIcon}
+                  agentLabel={activeLabel}
                 />
                 <ChatPanel
                   uiState={uiState}
